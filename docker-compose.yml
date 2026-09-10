@@ -1,0 +1,24 @@
+services:
+  cicd-console:
+    build: .
+    image: cicd-console:latest
+    container_name: cicd-console
+    # 自启动 + 崩溃自动重启
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 覆盖 .env 里的本地路径，指向容器内的持久化目录
+      PORT: "8090"
+      DATA_FILE: /app/data/data.json
+    ports:
+      # 只绑回环，公网入口统一走 cloudflared 隧道
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

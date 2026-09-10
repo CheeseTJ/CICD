@@ -1,0 +1,50 @@
+name: Deploy
+
+# push 到 main 自动部署到本机（self-hosted runner 与服务同机，docker 部署）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # 支持在 GitHub 页面手动触发
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 不清理未跟踪文件，保住持久化的 data/ 目录
+          clean: false
+
+      - name: Check runtime files
+        run: |
+          mkdir -p data
+          if [ ! -f .env ]; then
+            echo "缺少 .env：请先在 $PWD 配置 GITHUB_TOKEN 与 PGYER_API_KEY" >&2
+            exit 1
+          fi
+          echo "runtime files ready"
+
+      - name: Backup current image
+        run: sudo docker tag cicd-console:latest cicd-console:backup || true
+
+      - name: Build & Up
+        run: sudo docker compose up -d --build
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8090/api/health > /dev/null; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "health check failed"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "部署失败，回滚旧镜像"
+          sudo docker tag cicd-console:backup cicd-console:latest || true
+          sudo docker compose up -d --no-build

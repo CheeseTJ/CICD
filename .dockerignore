@@ -1,0 +1,7 @@
+.git
+.github
+.env
+data
+data.json
+*.md
+cicd-console

@@ -1,0 +1,8 @@
+# 敏感配置，绝不入库
+.env
+data/
+data.json
+
+# 本地编译产物
+cicd-console
+pgyer-sync

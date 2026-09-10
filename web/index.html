@@ -1,0 +1,1447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CI/CD 管理平台</title>
+  <style>
+    :root {
+      --bg: #070b16;
+      --sidebar: #0a0f1e;
+      --panel: #0d1424;
+      --panel-hover: #101a2e;
+      --border: #1c2438;
+      --border-soft: #161e30;
+      --text: #e8ecf5;
+      --muted: #8b93a8;
+      --muted-dim: #5d677d;
+      --accent: #3b82f6;
+      --accent-strong: #2563eb;
+      --accent-soft: rgba(59, 130, 246, 0.12);
+      --green: #22c55e;
+      --green-soft: rgba(34, 197, 94, 0.12);
+      --red: #ef4444;
+      --red-soft: rgba(239, 68, 68, 0.12);
+      --orange: #f59e0b;
+      --radius-card: 14px;
+      --radius-btn: 10px;
+      --radius-tile: 12px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    body::after {
+      content: '';
+      position: fixed;
+      left: -10%;
+      bottom: -30%;
+      width: 60%;
+      height: 70%;
+      background: radial-gradient(closest-side, rgba(37, 99, 235, 0.20), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+    button { font-family: inherit; }
+    input, select { font-family: inherit; }
+    svg { display: block; }
+
+    .app { display: flex; min-height: 100vh; position: relative; z-index: 1; }
+
+    /* ---------- 侧边导航 ---------- */
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border-soft);
+      padding: 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 26px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 0 6px; }
+    .brand-logo {
+      width: 36px; height: 36px;
+      border-radius: var(--radius-btn);
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; font-weight: 700; color: #fff;
+      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+      flex-shrink: 0;
+    }
+    .brand-name { font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
+    .nav { display: flex; flex-direction: column; gap: 6px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px;
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: var(--radius-btn);
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: left;
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    .nav-item:hover { background: rgba(255, 255, 255, 0.03); color: var(--text); }
+    .nav-item.active {
+      background: var(--accent-soft);
+      border-color: rgba(59, 130, 246, 0.45);
+      color: #fff;
+      font-weight: 500;
+    }
+    .nav-item.active .nav-icon { color: #7eb0ff; }
+    .nav-icon { color: inherit; flex-shrink: 0; }
+    .nav-label { flex: 1; }
+    .nav-badge {
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 1px 7px;
+      min-width: 22px;
+      text-align: center;
+    }
+    .nav-item.active .nav-badge { color: #bcd4ff; background: rgba(59, 130, 246, 0.25); }
+    .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--muted-dim); padding: 0 8px; }
+
+    /* ---------- 主区域 ---------- */
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 16px 28px;
+      border-bottom: 1px solid var(--border-soft);
+      position: sticky; top: 0; z-index: 20;
+      background: rgba(7, 11, 22, 0.86);
+      backdrop-filter: blur(10px);
+    }
+    .search {
+      position: relative;
+      flex: 1;
+      max-width: 380px;
+    }
+    .search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted-dim); }
+    .search input {
+      width: 100%;
+      padding: 10px 12px 10px 38px;
+      border-radius: var(--radius-btn);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s, background .15s;
+    }
+    .search input::placeholder { color: var(--muted-dim); }
+    .search input:focus { border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
+    .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 15px;
+      border-radius: var(--radius-btn);
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background .15s, border-color .15s, opacity .15s;
+    }
+    .btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); border-color: #2b3550; }
+    .btn.primary {
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
+      color: #fff;
+      font-weight: 500;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28);
+    }
+    .btn.primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.icon-only { padding: 9px 11px; }
+
+    .content { padding: 26px 28px 60px; }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+    .page-head h1 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: 0.2px; }
+    .page-head p { margin: 7px 0 0; color: var(--muted); font-size: 14px; }
+
+    .banner {
+      display: none;
+      margin-bottom: 18px;
+      padding: 12px 16px;
+      border-radius: var(--radius-btn);
+      font-size: 13px;
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: var(--orange);
+    }
+    .banner.show { display: block; }
+
+    /* ---------- 统计卡 ---------- */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 30px; }
+    .stat {
+      display: flex; align-items: center; gap: 14px;
+      padding: 18px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      cursor: default;
+    }
+    .stat-icon {
+      width: 44px; height: 44px; flex-shrink: 0;
+      border-radius: var(--radius-tile);
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.9), rgba(99, 102, 241, 0.9));
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(59, 130, 246, 0.25);
+    }
+    .stat-body { flex: 1; min-width: 0; }
+    .stat-label { font-size: 13px; color: var(--muted); }
+    .stat-value { font-size: 26px; font-weight: 650; line-height: 1.25; letter-spacing: 0.3px; }
+    .stat-arrow { color: var(--muted-dim); flex-shrink: 0; }
+
+    /* ---------- 分区头 ---------- */
+    .section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+    .section-head h2 { margin: 0; font-size: 18px; font-weight: 600; }
+    .section-head .sub { margin: 5px 0 0; font-size: 13px; color: var(--muted); }
+    .section-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .pills { display: flex; gap: 4px; padding: 3px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: var(--radius-btn); }
+    .pill {
+      padding: 6px 13px; border-radius: 7px; border: none; background: transparent;
+      color: var(--muted); font-size: 13px; cursor: pointer; transition: background .15s, color .15s;
+    }
+    .pill:hover { color: var(--text); }
+    .pill.active { background: var(--accent-strong); color: #fff; font-weight: 500; }
+    .select-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
+      border-radius: var(--radius-btn);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      color: var(--text); font-size: 13px; cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    .select-btn:hover { background: rgba(255, 255, 255, 0.07); border-color: #2b3550; }
+    .select-btn .chev { color: var(--muted-dim); }
+
+    /* ---------- 应用卡片 ---------- */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+    .card {
+      position: relative;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 18px;
+      display: flex; flex-direction: column; gap: 13px;
+      transition: border-color .15s, background .15s, transform .15s;
+    }
+    .card:hover { border-color: #2a3550; background: var(--panel-hover); }
+    .card-top { display: flex; align-items: flex-start; gap: 13px; }
+    .tile {
+      width: 46px; height: 46px; flex-shrink: 0;
+      border-radius: var(--radius-tile);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+    }
+    .card-title { flex: 1; min-width: 0; }
+    .card-name { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-name a { color: var(--text); text-decoration: none; }
+    .card-name a:hover { color: #8fb8ff; }
+    /* 固定占两行高度，避免描述长短不一导致卡片内部错位 */
+    .card-desc {
+      margin-top: 4px; font-size: 12.5px; color: var(--muted); line-height: 1.5;
+      height: 3em;
+      overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      word-break: break-word;
+    }
+    .icon-btn {
+      background: transparent; border: none; color: var(--muted);
+      padding: 4px; border-radius: 7px; cursor: pointer; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .icon-btn:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+
+    .status {
+      display: inline-flex; align-items: center; gap: 6px;
+      align-self: flex-start;
+      padding: 3px 11px 3px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--muted);
+      border: 1px solid transparent;
+    }
+    .status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status.ok { background: var(--green-soft); color: var(--green); border-color: rgba(34, 197, 94, 0.28); }
+    .status.warn { background: rgba(245, 158, 11, 0.12); color: var(--orange); border-color: rgba(245, 158, 11, 0.28); }
+    .status.off { background: rgba(255, 255, 255, 0.05); color: var(--muted-dim); border-color: var(--border); }
+    .status.bad { background: var(--red-soft); color: #ff8f8f; border-color: rgba(239, 68, 68, 0.3); }
+    .status.run { background: var(--accent-soft); color: #7eb0ff; border-color: rgba(59, 130, 246, 0.35); }
+
+    .run-meta { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+    .run-meta .sep { color: var(--muted-dim); }
+    .commit {
+      font-size: 12.5px; color: var(--text); opacity: 0.85;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .history { display: flex; align-items: center; gap: 4px; }
+    .hist-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-dim); flex-shrink: 0; }
+    .hist-dot.ok { background: var(--green); }
+    .hist-dot.bad { background: var(--red); }
+    .hist-dot.run { background: var(--accent); }
+    .wf-names { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .versions { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 600; flex-wrap: wrap; }
+    .versions .cur { color: var(--muted); font-weight: 500; }
+    .versions .arrow { color: var(--muted-dim); flex-shrink: 0; }
+    .versions .next { color: var(--text); }
+    .versions .next.none { color: var(--muted-dim); font-weight: 500; }
+
+    .time { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
+    .time svg { flex-shrink: 0; color: var(--muted-dim); }
+
+    .progress { display: none; height: 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+    .progress.on { display: block; }
+    .progress-bar { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .3s; }
+
+    .card-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 3px; }
+    .switch-label { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+    .switch { position: relative; width: 38px; height: 22px; border-radius: 999px; background: #2a3247; transition: background .2s; flex-shrink: 0; }
+    .switch::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 16px; height: 16px; border-radius: 50%; background: #8b93a8;
+      transition: transform .2s, background .2s;
+    }
+    .switch.on { background: var(--accent-strong); }
+    .switch.on::after { transform: translateX(16px); background: #fff; }
+    .switch-label.disabled { opacity: 0.5; cursor: not-allowed; }
+    .foot-right { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .sync-msg {
+      font-size: 12px; color: var(--muted);
+      max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sync-msg.ok { color: var(--green); }
+    .sync-msg.err { color: var(--red); }
+    .detail-link { color: var(--accent); cursor: pointer; text-decoration: none; }
+    .detail-link:hover { text-decoration: underline; }
+    .spin {
+      display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px;
+      border: 2px solid rgba(255, 255, 255, 0.18); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .empty { color: var(--muted); text-align: center; padding: 70px 20px; }
+    .empty .empty-icon { margin: 0 auto 14px; width: 48px; height: 48px; color: var(--muted-dim); }
+
+    /* ---------- 弹出菜单 ---------- */
+    .pop-menu {
+      position: fixed; z-index: 200;
+      min-width: 190px;
+      background: #101828;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-btn);
+      padding: 6px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      display: none;
+    }
+    .pop-menu.show { display: block; }
+    .pop-item {
+      display: flex; align-items: center; gap: 9px;
+      width: 100%; padding: 9px 11px;
+      background: transparent; border: none; border-radius: 7px;
+      color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+    }
+    .pop-item > span { flex: 1; }
+    .pop-item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+    .pop-item:disabled { color: var(--muted-dim); cursor: not-allowed; }
+    .pop-item.active { color: #8fb8ff; }
+    .pop-item .tick { color: var(--accent); flex-shrink: 0; }
+    .pop-item.danger { color: #ff8f8f; }
+    .pop-item.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); }
+
+    /* ---------- 弹窗 ---------- */
+    .modal-mask {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(3, 6, 14, 0.7);
+      backdrop-filter: blur(3px);
+      display: none; align-items: center; justify-content: center;
+    }
+    .modal-mask.show { display: flex; }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      width: min(560px, calc(100vw - 40px));
+      max-height: 80vh;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+    }
+    .modal-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .modal-title { font-size: 15px; font-weight: 600; }
+    .modal-close {
+      background: transparent; border: none; color: var(--muted);
+      font-size: 21px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer;
+    }
+    .modal-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
+    .modal-tip { padding: 14px 18px 4px; font-size: 12.5px; color: var(--muted); }
+    .modal-list { overflow-y: auto; padding: 10px 12px 14px; }
+    .modal-row { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-radius: 9px; cursor: pointer; }
+    .modal-row:hover { background: rgba(255, 255, 255, 0.04); }
+    .modal-row input { width: 16px; height: 16px; accent-color: var(--accent-strong); cursor: pointer; flex-shrink: 0; }
+    .modal-info { min-width: 0; }
+    .modal-name { font-size: 13.5px; font-weight: 500; word-break: break-all; }
+    .modal-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    .detail-body {
+      padding: 16px 18px; overflow-y: auto;
+      font-size: 12.5px; line-height: 1.7; color: var(--text);
+      word-break: break-all; white-space: pre-wrap;
+    }
+
+    /* ---------- 设置 ---------- */
+    .panel {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius-card); padding: 6px 18px; max-width: 720px;
+    }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; border-bottom: 1px solid var(--border-soft); }
+    .row:last-child { border-bottom: none; }
+    .row-label { font-size: 13.5px; color: var(--muted); }
+    .row-value { font-size: 13.5px; font-weight: 500; text-align: right; word-break: break-all; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+    .tag.ok { background: var(--green-soft); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.28); }
+    .tag.bad { background: var(--red-soft); color: #ff8f8f; border: 1px solid rgba(239, 68, 68, 0.28); }
+    .tag .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    @media (max-width: 1180px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 900px) {
+      .sidebar { display: none; }
+      .content { padding: 20px 16px 50px; }
+      .topbar { padding: 14px 16px; }
+      .stats { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">&#8734;</div>
+        <div class="brand-name">CI/CD 管理平台</div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="apps">
+          <span class="nav-icon" data-icon="box"></span>
+          <span class="nav-label">应用</span>
+          <span class="nav-badge" id="navBadge">0</span>
+        </button>
+        <button class="nav-item" data-view="deployments">
+          <span class="nav-icon" data-icon="rocket"></span>
+          <span class="nav-label">部署</span>
+          <span class="nav-badge" id="navDeployBadge">0</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-icon" data-icon="gear"></span>
+          <span class="nav-label">设置</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">GitHub Release &rarr; 蒲公英</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div class="search">
+          <span data-icon="search"></span>
+          <input id="searchInput" type="text" placeholder="搜索应用名称..." autocomplete="off" />
+        </div>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="btn">
+            <span data-icon="refresh"></span>
+            <span>刷新</span>
+          </button>
+          <button id="addBtn" class="btn primary">
+            <span data-icon="plus"></span>
+            <span>添加应用</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="banner" id="banner"></div>
+
+        <section class="view active" id="view-apps">
+          <div class="page-head">
+            <div>
+              <h1>我的应用</h1>
+              <p>从 GitHub 最新 Release 拉取 APK 并发布到蒲公英</p>
+            </div>
+          </div>
+
+          <div class="stats" id="stats"></div>
+
+          <div class="section-head">
+            <div>
+              <h2>应用列表</h2>
+              <p class="sub" id="repoCount"></p>
+            </div>
+            <div class="section-tools">
+              <div class="pills" id="pills"></div>
+              <button class="select-btn" id="sortBtn"><span></span></button>
+            </div>
+          </div>
+
+          <div class="grid" id="grid"></div>
+          <div class="empty" id="empty" style="display:none"></div>
+        </section>
+
+        <section class="view" id="view-deployments">
+          <div class="page-head">
+            <div>
+              <h1>部署</h1>
+              <p>自动发现配置了 GitHub Actions 的仓库，展示最近一次运行状态</p>
+            </div>
+          </div>
+
+          <div class="stats" id="deployStats"></div>
+
+          <div class="section-head">
+            <div>
+              <h2>服务列表</h2>
+              <p class="sub" id="serviceCount"></p>
+            </div>
+            <div class="section-tools">
+              <div class="pills" id="deployPills"></div>
+              <button class="select-btn" id="deploySortBtn"><span></span></button>
+            </div>
+          </div>
+
+          <div class="grid" id="deployGrid"></div>
+          <div class="empty" id="deployEmpty" style="display:none"></div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div class="page-head">
+            <div>
+              <h1>设置</h1>
+              <p>服务配置与运行参数（只读，通过环境变量配置）</p>
+            </div>
+          </div>
+          <div class="panel" id="settingsPanel"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="pop-menu" id="popMenu"></div>
+
+  <div class="modal-mask" id="modalMask">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">选择 App 仓库</span>
+        <button class="modal-close" id="closeModal">&times;</button>
+      </div>
+      <div class="modal-tip">勾选的仓库会出现在「我的应用」，可同步其最新 Release 的 APK。</div>
+      <div class="modal-list" id="modalList"></div>
+    </div>
+  </div>
+
+  <div class="modal-mask" id="detailMask">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title" id="detailTitle">同步失败</span>
+        <button class="modal-close" id="closeDetail">&times;</button>
+      </div>
+      <div class="detail-body" id="detailBody"></div>
+    </div>
+  </div>
+
+  <script>
+    const ICONS = {
+      home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5.6 9.7V20a1 1 0 0 0 1 1h10.8a1 1 0 0 0 1-1V9.7"/>',
+      box: '<path d="m21 16-9 5-9-5V8l9-5 9 5z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/>',
+      gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/>',
+      refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3.5V9h-5.5"/>',
+      plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+      rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+      arrowRight: '<path d="m9 6 6 6-6 6"/>',
+      chevronRight: '<path d="m9 5 7 7-7 7"/>',
+      chevronDown: '<path d="m6 9 6 6 6-6"/>',
+      dots: '<circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/>',
+      external: '<path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+      close: '<path d="M6 6 18 18"/><path d="M18 6 6 18"/>',
+      globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/>',
+      layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+      smartphone: '<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+      cpu: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/><path d="M10 3v3.5"/><path d="M14 3v3.5"/><path d="M10 17.5V21"/><path d="M14 17.5V21"/><path d="M3 10h3.5"/><path d="M3 14h3.5"/><path d="M17.5 10H21"/><path d="M17.5 14H21"/>',
+      check: '<path d="m5 13 4 4L19 7"/>',
+      cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.2 9.2 4.5 4.5 0 0 0 7 19z"/>',
+      play: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5z"/>',
+      trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>'
+    };
+
+    const LANG_ICON = {
+      dart: 'box', flutter: 'box',
+      javascript: 'globe', typescript: 'globe', html: 'globe', css: 'globe', vue: 'globe', svelte: 'globe',
+      go: 'rocket', rust: 'cpu', c: 'cpu', 'c++': 'cpu', java: 'smartphone', kotlin: 'smartphone',
+      swift: 'smartphone', 'objective-c': 'smartphone', python: 'layers', ruby: 'layers', php: 'globe',
+      shell: 'cpu', 'c#': 'cpu'
+    };
+
+    const GRADIENTS = [
+      ['#3b82f6', '#8b5cf6'],
+      ['#3b82f6', '#06b6d4'],
+      ['#4f46e5', '#3b82f6'],
+      ['#2563eb', '#7c3aed'],
+      ['#0ea5e9', '#6366f1']
+    ];
+
+    let repos = [];
+    let services = [];
+    let health = {};
+    let keyword = '';
+    let filter = 'all';
+    let sortBy = 'recent';
+    let deployFilter = 'all';
+    let deploySortBy = 'recent';
+    let deployLoaded = false;
+
+    /* ---------- 基础工具 ---------- */
+    function svg(name, size) {
+      const s = size || 18;
+      return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+        (ICONS[name] || '') + '</svg>';
+    }
+
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text !== undefined) n.textContent = text;
+      return n;
+    }
+
+    function mountIcons(root) {
+      (root || document).querySelectorAll('[data-icon]').forEach(node => {
+        node.innerHTML = svg(node.getAttribute('data-icon'), Number(node.getAttribute('data-size')) || 18);
+      });
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('请求失败 ' + res.status));
+      return data;
+    }
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    function hash(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+      return h;
+    }
+
+    function tileStyle(name, language) {
+      const g = GRADIENTS[hash(name) % GRADIENTS.length];
+      const icon = LANG_ICON[(language || '').toLowerCase()] || 'box';
+      return { background: 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')', icon };
+    }
+
+    // 后端写入的时间是 UTC；老数据没有时区标记，补上 Z 才能解析成正确的瞬时。
+    function parseTime(s) {
+      if (!s) return 0;
+      const hasZone = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(s);
+      const t = Date.parse(hasZone ? s : s.replace(' ', 'T') + 'Z');
+      return isNaN(t) ? 0 : Math.floor(t / 1000);
+    }
+
+    function syncedUnix(r) {
+      return r.last_synced_at_unix || parseTime(r.last_synced_at);
+    }
+
+    // 统一按浏览器本地时区展示
+    function localTime(unix) {
+      if (!unix) return '';
+      return new Date(unix * 1000).toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function relTime(unix) {
+      if (!unix) return '';
+      const diff = Math.floor(Date.now() / 1000) - unix;
+      if (diff < 60) return '刚刚';
+      if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+      if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+      if (diff < 86400 * 30) return Math.floor(diff / 86400) + ' 天前';
+      return new Date(unix * 1000).toLocaleDateString('zh-CN');
+    }
+
+    function isoUnix(s) {
+      if (!s) return 0;
+      const t = Date.parse(s);
+      return isNaN(t) ? 0 : Math.floor(t / 1000);
+    }
+
+    function formatDur(sec) {
+      if (!sec || sec < 0) return '';
+      if (sec < 60) return sec + 's';
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m + 'm' + (s ? s + 's' : '');
+    }
+
+    // GitHub Actions 运行状态 → 展示用的文案与配色
+    function runStatus(s) {
+      switch (s) {
+        case 'success': return { cls: 'ok', text: '成功', icon: 'check' };
+        case 'failure': return { cls: 'bad', text: '失败', icon: 'close' };
+        case 'cancelled': return { cls: 'off', text: '已取消', icon: 'close' };
+        case 'skipped': return { cls: 'off', text: '已跳过', icon: 'close' };
+        case 'in_progress': return { cls: 'run', text: '运行中', icon: 'refresh' };
+        case 'queued': return { cls: 'run', text: '排队中', icon: 'clock' };
+        case 'startup_failure': return { cls: 'bad', text: '启动失败', icon: 'close' };
+        default: return { cls: 'off', text: s || '未知', icon: 'clock' };
+      }
+    }
+
+    /* ---------- 弹窗 / 菜单 ---------- */
+    function openDetail(title, text) {
+      document.getElementById('detailTitle').textContent = title;
+      document.getElementById('detailBody').textContent = text;
+      document.getElementById('detailMask').classList.add('show');
+    }
+
+    function closeMenus() {
+      document.getElementById('popMenu').classList.remove('show');
+    }
+
+    function openMenu(anchor, items) {
+      const menu = document.getElementById('popMenu');
+      menu.innerHTML = '';
+      items.forEach(it => {
+        const b = el('button', 'pop-item' + (it.danger ? ' danger' : '') + (it.active ? ' active' : ''));
+        if (it.icon) b.insertAdjacentHTML('beforeend', svg(it.icon, 16));
+        b.appendChild(el('span', '', it.label));
+        if (it.active) b.insertAdjacentHTML('beforeend', '<span class="tick">' + svg('check', 15) + '</span>');
+        if (it.disabled) b.disabled = true;
+        b.onclick = () => { closeMenus(); it.onClick(); };
+        menu.appendChild(b);
+      });
+      menu.classList.add('show');
+      const r = anchor.getBoundingClientRect();
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      let left = r.right - mw;
+      let top = r.bottom + 6;
+      if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+      if (left < 8) left = 8;
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
+    }
+
+    // 用自定义下拉替代原生 select，避免系统白色弹层破坏深色主题
+    function setupSortButton(btnId, labels, getValue, apply) {
+      const btn = document.getElementById(btnId);
+      const label = btn.querySelector('span');
+      const sync = () => { label.textContent = labels[getValue()] || Object.values(labels)[0]; };
+      btn.insertAdjacentHTML('beforeend', '<span class="chev">' + svg('chevronDown', 15) + '</span>');
+      btn.onclick = e => {
+        e.stopPropagation();
+        openMenu(btn, Object.entries(labels).map(([value, text]) => ({
+          label: text,
+          active: getValue() === value,
+          onClick: () => { apply(value); sync(); }
+        })));
+      };
+      sync();
+    }
+
+    // 卡片内只显示简短结果，完整错误信息放进弹窗（避免破坏布局）。
+    function showError(msgEl, text) {
+      msgEl.innerHTML = '';
+      msgEl.className = 'sync-msg err';
+      const label = el('span', '', '同步失败');
+      label.title = text;
+      msgEl.appendChild(label);
+      msgEl.appendChild(document.createTextNode(' '));
+      const link = el('a', 'detail-link', '详情');
+      link.href = 'javascript:void(0)';
+      link.title = '查看完整错误信息';
+      link.onclick = e => { e.preventDefault(); openDetail('同步失败', text); };
+      msgEl.appendChild(link);
+    }
+
+    async function pollJob(jobId, handlers) {
+      while (true) {
+        await sleep(800);
+        let j;
+        try {
+          j = await api('/api/repos/sync/progress?id=' + encodeURIComponent(jobId));
+        } catch (e) { handlers.onError(e); return; }
+        if (j.status === 'done') { handlers.onDone(j); return; }
+        if (j.status === 'error') { handlers.onError(new Error(j.message || '同步失败')); return; }
+        handlers.onProgress(j);
+      }
+    }
+
+    /* ---------- 数据加载 ---------- */
+    async function loadHealth() {
+      const banner = document.getElementById('banner');
+      try {
+        health = await api('/api/health');
+        const missing = [];
+        if (!health.github_token) missing.push('GITHUB_TOKEN');
+        if (!health.pgyer_key) missing.push('PGYER_API_KEY');
+        if (missing.length) {
+          banner.textContent = '缺少环境变量：' + missing.join('、') + '，请在启动服务时配置。';
+          banner.classList.add('show');
+        } else {
+          banner.classList.remove('show');
+        }
+        renderSettings();
+      } catch (e) {
+        banner.textContent = '服务异常：' + e.message;
+        banner.classList.add('show');
+      }
+    }
+
+    async function loadRepos() {
+      const btn = document.getElementById('refreshBtn');
+      btn.disabled = true;
+      try {
+        const data = await api('/api/repos');
+        repos = data.repos || [];
+        render();
+        renderModal();
+      } catch (e) {
+        const banner = document.getElementById('banner');
+        banner.textContent = '加载仓库失败：' + e.message;
+        banner.classList.add('show');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    /* ---------- 渲染：统计 ---------- */
+    function renderStats(apps) {
+      const items = [
+        { label: '应用', value: apps.length, icon: 'box' },
+        { label: '已同步', value: apps.filter(a => a.last_synced_tag).length, icon: 'check' },
+        { label: '自动同步', value: apps.filter(a => a.auto_sync).length, icon: 'refresh' },
+        { label: '蒲公英已关联', value: apps.filter(a => a.pgyer_linked).length, icon: 'cloud' }
+      ];
+      const box = document.getElementById('stats');
+      box.innerHTML = '';
+      items.forEach(it => {
+        const card = el('div', 'stat');
+        const icon = el('div', 'stat-icon');
+        icon.innerHTML = svg(it.icon, 22);
+        card.appendChild(icon);
+        const body = el('div', 'stat-body');
+        body.appendChild(el('div', 'stat-label', it.label));
+        body.appendChild(el('div', 'stat-value', String(it.value)));
+        card.appendChild(body);
+        const arrow = el('div', 'stat-arrow');
+        arrow.innerHTML = svg('chevronRight', 18);
+        card.appendChild(arrow);
+        box.appendChild(card);
+      });
+    }
+
+    function statusOf(r) {
+      if (r.archived) return { cls: 'off', text: '已停止' };
+      if (r.last_synced_tag) return { cls: 'ok', text: '已同步' };
+      return { cls: 'warn', text: '待同步' };
+    }
+
+    /* ---------- 渲染：卡片 ---------- */
+    function renderCard(r) {
+      const card = el('div', 'card');
+
+      const top = el('div', 'card-top');
+      const st = tileStyle(r.full_name, r.language);
+      const tile = el('div', 'tile');
+      tile.style.background = st.background;
+      tile.innerHTML = svg(st.icon, 22);
+      top.appendChild(tile);
+
+      const title = el('div', 'card-title');
+      const name = el('div', 'card-name');
+      const a = el('a', '', r.full_name);
+      a.href = r.html_url; a.target = '_blank'; a.rel = 'noopener';
+      name.appendChild(a);
+      title.appendChild(name);
+      // 没有描述也占位，保证同排卡片内部元素对齐
+      title.appendChild(el('div', 'card-desc', r.description || ''));
+      top.appendChild(title);
+
+      const moreBtn = el('button', 'icon-btn');
+      moreBtn.innerHTML = svg('dots', 18);
+      moreBtn.title = '更多操作';
+      moreBtn.onclick = e => {
+        e.stopPropagation();
+        openMenu(moreBtn, [
+          {
+            icon: 'external', label: '查看 GitHub Release',
+            disabled: !r.latest_html_url,
+            onClick: () => window.open(r.latest_html_url, '_blank', 'noopener')
+          },
+          {
+            icon: 'play', label: '打开蒲公英下载页',
+            disabled: !r.pgyer_shortcut_url,
+            onClick: () => window.open(r.pgyer_shortcut_url, '_blank', 'noopener')
+          },
+          {
+            icon: 'trash', label: '从我的应用移除', danger: true,
+            onClick: async () => {
+              try {
+                await api('/api/repos/mark', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ full_name: r.full_name, marked: false })
+                });
+                await loadRepos();
+              } catch (err) { openDetail('操作失败', err.message); }
+            }
+          }
+        ]);
+      };
+      top.appendChild(moreBtn);
+      card.appendChild(top);
+
+      const s = statusOf(r);
+      const status = el('span', 'status ' + s.cls);
+      status.appendChild(el('span', 'dot'));
+      status.appendChild(document.createTextNode(s.text));
+      card.appendChild(status);
+
+      const vers = el('div', 'versions');
+      const cur = r.pgyer_linked && r.pgyer_version ? 'v' + r.pgyer_version : '—';
+      const curNode = el('span', 'cur', cur);
+      if (r.pgyer_shortcut_url) {
+        curNode.style.cursor = 'pointer';
+        curNode.title = '打开蒲公英下载页';
+        curNode.onclick = () => window.open(r.pgyer_shortcut_url, '_blank', 'noopener');
+      }
+      vers.appendChild(curNode);
+      const arrow = el('span', 'arrow');
+      arrow.innerHTML = svg('arrowRight', 16);
+      vers.appendChild(arrow);
+      const next = el('span', 'next' + (r.latest_tag ? '' : ' none'), r.latest_tag || '—');
+      vers.appendChild(next);
+      card.appendChild(vers);
+
+      const ts = syncedUnix(r);
+      const time = el('div', 'time');
+      time.innerHTML = svg('clock', 14);
+      time.appendChild(document.createTextNode(
+        ts ? relTime(ts) + '同步' : '尚未同步'
+      ));
+      time.title = ts ? ('上次同步：' + localTime(ts)) : '尚未同步过';
+      card.appendChild(time);
+
+      const prog = el('div', 'progress');
+      const progBar = el('div', 'progress-bar');
+      prog.appendChild(progBar);
+      card.appendChild(prog);
+
+      const foot = el('div', 'card-foot');
+      const swLabel = el('label', 'switch-label');
+      const sw = el('span', 'switch' + (r.auto_sync ? ' on' : ''));
+      swLabel.appendChild(document.createTextNode('自动同步'));
+      swLabel.appendChild(sw);
+      swLabel.title = r.auto_sync ? '已开启：发现新 Release 自动发布' : '已关闭';
+      swLabel.onclick = async e => {
+        e.preventDefault();
+        if (swLabel.classList.contains('disabled')) return;
+        swLabel.classList.add('disabled');
+        const nextOn = !sw.classList.contains('on');
+        try {
+          await api('/api/repos/autosync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ full_name: r.full_name, auto_sync: nextOn })
+          });
+          r.auto_sync = nextOn;
+          sw.classList.toggle('on', nextOn);
+          swLabel.title = nextOn ? '已开启：发现新 Release 自动发布' : '已关闭';
+        } catch (err) {
+          showError(msg, err.message);
+        } finally {
+          swLabel.classList.remove('disabled');
+        }
+      };
+      foot.appendChild(swLabel);
+
+      const right = el('div', 'foot-right');
+      const msg = el('span', 'sync-msg');
+      right.appendChild(msg);
+
+      const syncBtn = el('button', 'btn primary');
+      syncBtn.innerHTML = svg('rocket', 16);
+      syncBtn.appendChild(el('span', '', '同步'));
+      syncBtn.title = '从 GitHub 拉取最新 Release 的 APK 并发布到蒲公英';
+      if (!r.apk_assets.length) {
+        syncBtn.disabled = true;
+        syncBtn.title = '最新 Release 中没有 .apk 资产';
+      }
+      syncBtn.onclick = async () => {
+        syncBtn.disabled = true;
+        swLabel.classList.add('disabled');
+        prog.classList.add('on');
+        progBar.style.width = '0%';
+        msg.className = 'sync-msg';
+        msg.innerHTML = '<span class="spin"></span>准备中';
+        const names = { prepare: '准备中', download: '下载 APK', upload: '上传蒲公英', publish: '发布中' };
+        try {
+          const { job_id } = await api('/api/repos/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ full_name: r.full_name })
+          });
+          await pollJob(job_id, {
+            onProgress(j) {
+              progBar.style.width = (j.percent || 0) + '%';
+              msg.textContent = (names[j.stage] || '处理中') + ' ' + (j.percent || 0) + '%';
+            },
+            onDone(j) {
+              const res = j.result || {};
+              progBar.style.width = '100%';
+              msg.textContent = '已同步 ' + (res.build_version || '');
+              msg.className = 'sync-msg ok';
+              setTimeout(() => { prog.classList.remove('on'); loadRepos(); }, 700);
+            },
+            onError(err) {
+              prog.classList.remove('on');
+              showError(msg, err.message);
+              syncBtn.disabled = false;
+              swLabel.classList.remove('disabled');
+            }
+          });
+        } catch (err) {
+          prog.classList.remove('on');
+          showError(msg, err.message);
+          syncBtn.disabled = false;
+          swLabel.classList.remove('disabled');
+        }
+      };
+      right.appendChild(syncBtn);
+      foot.appendChild(right);
+      card.appendChild(foot);
+
+      return card;
+    }
+
+    /* ---------- 渲染：列表 ---------- */
+    function render() {
+      const apps = repos.filter(r => r.is_app);
+      document.getElementById('navBadge').textContent = String(apps.length);
+      renderStats(apps);
+
+      let list = apps.slice();
+      if (keyword) {
+        const k = keyword.toLowerCase();
+        list = list.filter(r => r.full_name.toLowerCase().includes(k) || (r.description || '').toLowerCase().includes(k));
+      }
+      if (filter === 'synced') list = list.filter(r => r.last_synced_tag);
+      if (filter === 'unsynced') list = list.filter(r => !r.last_synced_tag);
+
+      if (sortBy === 'name') list.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      else if (sortBy === 'release') list.sort((a, b) => (b.latest_published_at || '').localeCompare(a.latest_published_at || ''));
+      else list.sort((a, b) => syncedUnix(b) - syncedUnix(a));
+
+      document.getElementById('repoCount').textContent = '共 ' + apps.length + ' 个应用';
+
+      const grid = document.getElementById('grid');
+      grid.innerHTML = '';
+      list.forEach(r => grid.appendChild(renderCard(r)));
+
+      const empty = document.getElementById('empty');
+      if (list.length) {
+        empty.style.display = 'none';
+      } else {
+        empty.style.display = 'block';
+        empty.innerHTML = '';
+        const icon = el('div', 'empty-icon');
+        icon.innerHTML = svg('box', 48);
+        empty.appendChild(icon);
+        empty.appendChild(el('div', '', apps.length ? '没有符合条件的应用' : '还没有应用，点击右上角「添加应用」'));
+      }
+    }
+
+    function renderPills() {
+      const defs = [['all', '全部'], ['synced', '已同步'], ['unsynced', '未同步']];
+      const box = document.getElementById('pills');
+      box.innerHTML = '';
+      defs.forEach(([key, label]) => {
+        const b = el('button', 'pill' + (filter === key ? ' active' : ''), label);
+        b.onclick = () => { filter = key; renderPills(); render(); };
+        box.appendChild(b);
+      });
+    }
+
+    function renderDeployPills() {
+      const defs = [['all', '全部'], ['ok', '成功'], ['bad', '失败'], ['run', '进行中']];
+      const box = document.getElementById('deployPills');
+      box.innerHTML = '';
+      defs.forEach(([key, label]) => {
+        const b = el('button', 'pill' + (deployFilter === key ? ' active' : ''), label);
+        b.onclick = () => { deployFilter = key; renderDeployPills(); renderDeployments(); };
+        box.appendChild(b);
+      });
+    }
+
+    /* ---------- 渲染：部署视图 ---------- */
+    function deployStatusKey(svc) {
+      const l = svc.latest;
+      if (!l) return 'off';
+      return runStatus(l.status).cls;
+    }
+
+    function renderDeployStats(list) {
+      const items = [
+        { label: '服务', value: list.length, icon: 'rocket' },
+        { label: '运行成功', value: list.filter(s => deployStatusKey(s) === 'ok').length, icon: 'check' },
+        { label: '运行失败', value: list.filter(s => deployStatusKey(s) === 'bad').length, icon: 'close' },
+        { label: '进行中', value: list.filter(s => deployStatusKey(s) === 'run').length, icon: 'refresh' }
+      ];
+      const box = document.getElementById('deployStats');
+      box.innerHTML = '';
+      items.forEach(it => {
+        const card = el('div', 'stat');
+        const icon = el('div', 'stat-icon');
+        icon.innerHTML = svg(it.icon, 22);
+        card.appendChild(icon);
+        const body = el('div', 'stat-body');
+        body.appendChild(el('div', 'stat-label', it.label));
+        body.appendChild(el('div', 'stat-value', String(it.value)));
+        card.appendChild(body);
+        const arrow = el('div', 'stat-arrow');
+        arrow.innerHTML = svg('chevronRight', 18);
+        card.appendChild(arrow);
+        box.appendChild(card);
+      });
+    }
+
+    function renderServiceCard(svc) {
+      const card = el('div', 'card');
+
+      const top = el('div', 'card-top');
+      const st = tileStyle(svc.full_name, svc.language);
+      const tile = el('div', 'tile');
+      tile.style.background = st.background;
+      tile.innerHTML = svg(st.icon, 22);
+      top.appendChild(tile);
+
+      const title = el('div', 'card-title');
+      const name = el('div', 'card-name');
+      const a = el('a', '', svc.full_name);
+      a.href = svc.html_url; a.target = '_blank'; a.rel = 'noopener';
+      name.appendChild(a);
+      title.appendChild(name);
+      title.appendChild(el('div', 'card-desc', svc.description || svc.workflow_names.join(' · ')));
+      top.appendChild(title);
+
+      const moreBtn = el('button', 'icon-btn');
+      moreBtn.innerHTML = svg('dots', 18);
+      moreBtn.title = '更多操作';
+      moreBtn.onclick = e => {
+        e.stopPropagation();
+        openMenu(moreBtn, [
+          {
+            icon: 'external', label: '打开仓库',
+            onClick: () => window.open(svc.html_url, '_blank', 'noopener')
+          },
+          {
+            icon: 'play', label: '查看运行日志',
+            disabled: !(svc.latest && svc.latest.html_url),
+            onClick: () => window.open(svc.latest.html_url, '_blank', 'noopener')
+          }
+        ]);
+      };
+      top.appendChild(moreBtn);
+      card.appendChild(top);
+
+      const l = svc.latest;
+      if (!l) {
+        const none = el('span', 'status off');
+        none.appendChild(el('span', 'dot'));
+        none.appendChild(document.createTextNode('尚无运行记录'));
+        card.appendChild(none);
+        card.appendChild(el('div', 'wf-names', 'workflow：' + svc.workflow_names.join(' · ')));
+      } else {
+        const rs = runStatus(l.status);
+        const status = el('span', 'status ' + rs.cls);
+        status.appendChild(el('span', 'dot'));
+        status.appendChild(document.createTextNode(rs.text));
+        card.appendChild(status);
+
+        const meta = el('div', 'run-meta');
+        meta.appendChild(el('span', '', l.name));
+        meta.appendChild(el('span', 'sep', '·'));
+        meta.appendChild(el('span', '', '#' + l.run_number));
+        if (l.branch) {
+          meta.appendChild(el('span', 'sep', '·'));
+          meta.appendChild(el('span', '', l.branch));
+        }
+        card.appendChild(meta);
+
+        if (l.title) {
+          const commit = el('div', 'commit', l.title);
+          commit.title = l.title;
+          card.appendChild(commit);
+        }
+
+        const time = el('div', 'time');
+        time.innerHTML = svg('clock', 14);
+        const bits = [relTime(isoUnix(l.updated_at))];
+        if (l.duration_sec) bits.push(formatDur(l.duration_sec));
+        time.appendChild(document.createTextNode(bits.filter(Boolean).join(' · ')));
+        time.title = localTime(isoUnix(l.updated_at));
+        card.appendChild(time);
+
+        if (svc.recent && svc.recent.length > 1) {
+          const hist = el('div', 'history');
+          svc.recent.slice(1).forEach(r => {
+            const d = el('span', 'hist-dot ' + runStatus(r.status).cls);
+            d.title = r.name + ' #' + r.run_number + ' · ' + runStatus(r.status).text;
+            hist.appendChild(d);
+          });
+          card.appendChild(hist);
+        }
+      }
+
+      const foot = el('div', 'card-foot');
+      if (svc.private) {
+        const pb = el('span', 'badge private', '私有');
+        pb.title = '私有仓库：GitHub 的运行日志页需在已登录且有权限的浏览器中打开，否则会返回 404';
+        foot.appendChild(pb);
+      }
+      const wf = el('div', 'wf-names', svc.workflow_names.join(' · '));
+      wf.title = 'workflow：' + svc.workflow_names.join(' · ');
+      foot.appendChild(wf);
+
+      const right = el('div', 'foot-right');
+      const btn = el('button', 'btn');
+      btn.innerHTML = svg('external', 16);
+      btn.appendChild(el('span', '', '运行日志'));
+      if (!(l && l.html_url)) btn.disabled = true;
+      btn.title = svc.private
+        ? '私有仓库：需在已登录 GitHub 的浏览器中打开，否则 GitHub 返回 404'
+        : '在 GitHub 上查看这次运行的日志';
+      btn.onclick = () => window.open(l.html_url, '_blank', 'noopener');
+      right.appendChild(btn);
+      foot.appendChild(right);
+      card.appendChild(foot);
+
+      return card;
+    }
+
+    function renderDeployments() {
+      document.getElementById('navDeployBadge').textContent = String(services.length);
+      renderDeployStats(services);
+
+      let list = services.slice();
+      if (keyword) {
+        const k = keyword.toLowerCase();
+        list = list.filter(s =>
+          s.full_name.toLowerCase().includes(k) ||
+          (s.description || '').toLowerCase().includes(k) ||
+          (s.workflow_names || []).join(' ').toLowerCase().includes(k)
+        );
+      }
+      if (deployFilter !== 'all') list = list.filter(s => deployStatusKey(s) === deployFilter);
+
+      if (deploySortBy === 'name') list.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      else list.sort((a, b) => isoUnix((b.latest || {}).updated_at) - isoUnix((a.latest || {}).updated_at));
+
+      document.getElementById('serviceCount').textContent = '共 ' + services.length + ' 个服务（自动发现带 workflow 的仓库）';
+
+      const grid = document.getElementById('deployGrid');
+      grid.innerHTML = '';
+      list.forEach(s => grid.appendChild(renderServiceCard(s)));
+
+      const empty = document.getElementById('deployEmpty');
+      if (list.length) {
+        empty.style.display = 'none';
+      } else {
+        empty.style.display = 'block';
+        empty.innerHTML = '';
+        const icon = el('div', 'empty-icon');
+        icon.innerHTML = svg('rocket', 48);
+        empty.appendChild(icon);
+        empty.appendChild(el('div', '', services.length ? '没有符合条件的服务' : '没有发现配置了 GitHub Actions 的仓库'));
+      }
+    }
+
+    async function loadDeployments(force) {
+      if (deployLoaded && !force) return;
+      try {
+        const data = await api('/api/deployments');
+        services = data.services || [];
+        deployLoaded = true;
+        renderDeployments();
+      } catch (e) {
+        const banner = document.getElementById('banner');
+        banner.textContent = '加载部署信息失败：' + e.message;
+        banner.classList.add('show');
+      }
+    }
+
+    function renderSettings() {
+      const panel = document.getElementById('settingsPanel');
+      panel.innerHTML = '';
+      const tag = ok => {
+        const t = el('span', 'tag ' + (ok ? 'ok' : 'bad'));
+        t.appendChild(el('span', 'dot'));
+        t.appendChild(document.createTextNode(ok ? '已配置' : '未配置'));
+        return t;
+      };
+      const rows = [
+        ['GITHUB_TOKEN', tag(!!health.github_token)],
+        ['PGYER_API_KEY', tag(!!health.pgyer_key)],
+        ['GITHUB_OWNER', el('span', 'row-value', health.github_owner || '当前登录用户（含私有仓库）')],
+        ['自动同步间隔', el('span', 'row-value', health.auto_sync_interval || '-')],
+        ['数据文件', el('span', 'row-value', health.data_file || '-')]
+      ];
+      rows.forEach(([label, node]) => {
+        const row = el('div', 'row');
+        row.appendChild(el('div', 'row-label', label));
+        if (node.classList.contains('row-value')) row.appendChild(node);
+        else { const w = el('div'); w.appendChild(node); row.appendChild(w); }
+        panel.appendChild(row);
+      });
+    }
+
+    function renderModal() {
+      const list = document.getElementById('modalList');
+      list.innerHTML = '';
+      repos.forEach(r => {
+        const row = el('label', 'modal-row');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = r.is_app;
+        cb.onchange = async () => {
+          cb.disabled = true;
+          try {
+            await api('/api/repos/mark', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ full_name: r.full_name, marked: cb.checked })
+            });
+            r.is_app = cb.checked;
+            r.marked = cb.checked;
+            r.marked_set = true;
+            render();
+          } catch (e) {
+            cb.checked = !cb.checked;
+            openDetail('操作失败', e.message);
+          } finally {
+            cb.disabled = false;
+          }
+        };
+        row.appendChild(cb);
+        const info = el('div', 'modal-info');
+        info.appendChild(el('div', 'modal-name', r.full_name));
+        const meta = el('div', 'modal-meta');
+        const bits = [];
+        if (r.language) bits.push(r.language);
+        if (r.latest_tag) bits.push('最新 ' + r.latest_tag);
+        if (r.private) bits.push('私有');
+        if (r.archived) bits.push('已归档');
+        meta.textContent = bits.join(' · ') || '无 Release 信息';
+        info.appendChild(meta);
+        row.appendChild(info);
+        list.appendChild(row);
+      });
+    }
+
+    /* ---------- 事件绑定 ---------- */
+    let activeView = 'apps';
+
+    document.getElementById('searchInput').addEventListener('input', e => {
+      keyword = e.target.value.trim();
+      if (activeView === 'deployments') renderDeployments();
+      else render();
+    });
+    setupSortButton('sortBtn',
+      { recent: '最近更新', name: '名称', release: '最新发布' },
+      () => sortBy,
+      v => { sortBy = v; render(); });
+    setupSortButton('deploySortBtn',
+      { recent: '最近运行', name: '名称' },
+      () => deploySortBy,
+      v => { deploySortBy = v; renderDeployments(); });
+    document.getElementById('refreshBtn').onclick = () => {
+      if (activeView === 'deployments') return loadDeployments(true);
+      return loadRepos();
+    };
+    document.getElementById('addBtn').onclick = () => {
+      document.getElementById('modalMask').classList.add('show');
+      renderModal();
+    };
+    document.getElementById('closeModal').onclick = () => document.getElementById('modalMask').classList.remove('show');
+    document.getElementById('closeDetail').onclick = () => document.getElementById('detailMask').classList.remove('show');
+    document.getElementById('modalMask').addEventListener('click', e => {
+      if (e.target.id === 'modalMask') e.target.classList.remove('show');
+    });
+    document.getElementById('detailMask').addEventListener('click', e => {
+      if (e.target.id === 'detailMask') e.target.classList.remove('show');
+    });
+    document.addEventListener('click', closeMenus);
+    document.addEventListener('scroll', closeMenus, true);
+    window.addEventListener('resize', closeMenus);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeMenus();
+        document.getElementById('detailMask').classList.remove('show');
+        document.getElementById('modalMask').classList.remove('show');
+      }
+    });
+
+    document.querySelectorAll('.nav-item').forEach(btn => {
+      btn.onclick = () => {
+        activeView = btn.dataset.view;
+        document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        document.getElementById('view-' + activeView).classList.add('active');
+        document.getElementById('sortBtn').style.display = activeView === 'apps' ? '' : 'none';
+        document.getElementById('addBtn').style.display = activeView === 'settings' ? 'none' : '';
+        if (activeView === 'deployments') loadDeployments();
+        if (activeView === 'apps') loadDeployments(); // 让「部署」徽标也能及时更新
+      };
+    });
+
+    mountIcons();
+    renderPills();
+    renderDeployPills();
+    loadHealth();
+    loadRepos();
+    loadDeployments();
+  </script>
+</body>
+</html>
