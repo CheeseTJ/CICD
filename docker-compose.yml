@@ -15,10 +15,15 @@ services:
       # 只绑回环，公网入口统一走 cloudflared 隧道
       - "127.0.0.1:8090:8090"
     volumes:
-      - ./data:/app/data
+      # 用命名卷而非绑定挂载：自动部署会在 runner 工作区重建容器，
+      # 绑定挂载会跟着切换到空的 ./data，命名卷则跨工作区保持状态
+      - cicd-console-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 5s
+
+volumes:
+  cicd-console-data:

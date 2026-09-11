@@ -15,14 +15,16 @@ jobs:
           # 不清理未跟踪文件，保住持久化的 data/ 目录
           clean: false
 
-      - name: Check runtime files
+      - name: Write .env from secrets
         run: |
-          mkdir -p data
-          if [ ! -f .env ]; then
-            echo "缺少 .env：请先在 $PWD 配置 GITHUB_TOKEN 与 PGYER_API_KEY" >&2
-            exit 1
-          fi
-          echo "runtime files ready"
+          cat > .env <<EOF
+          GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
+          PGYER_API_KEY=${{ secrets.PGYER_API_KEY }}
+          PORT=8090
+          AUTO_SYNC_INTERVAL=5m
+          GITHUB_OWNER=
+          EOF
+          chmod 600 .env
 
       - name: Backup current image
         run: sudo docker tag cicd-console:latest cicd-console:backup || true
