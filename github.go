@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -220,6 +222,40 @@ func (c *githubClient) listRuns(ctx context.Context, owner, repo string, limit i
 		return nil, err
 	}
 	return resp.WorkflowRuns, nil
+}
+
+// getWorkflowContent 拉取 workflow 原文件内容（默认分支），用于判断实际部署平台。
+func (c *githubClient) getWorkflowContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	u := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repo, strings.TrimPrefix(path, "/"))
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if _, err := c.getJSON(ctx, u, &file); err != nil {
+		return nil, err
+	}
+	if file.Encoding == "base64" {
+		return base64.StdEncoding.DecodeString(strings.ReplaceAll(file.Content, "\n", ""))
+	}
+	return []byte(file.Content), nil
+}
+
+// workflowTexts 读取仓库前 limit 个 workflow 的原文件（供平台检测）。
+// 单个失败只记录日志并跳过，不影响其余。
+func (c *githubClient) workflowTexts(ctx context.Context, owner, repo string, wfs []GHWorkflow, limit int) []string {
+	var out []string
+	for i, wf := range wfs {
+		if i >= limit {
+			break
+		}
+		content, err := c.getWorkflowContent(ctx, owner, repo, wf.Path)
+		if err != nil {
+			log.Printf("[platforms] 读取 workflow 失败 %s/%s %s: %v", owner, repo, wf.Path, err)
+			continue
+		}
+		out = append(out, string(content))
+	}
+	return out
 }
 
 // hasApkAsset 判断最新 release 是否包含 .apk 资产。

@@ -83,6 +83,15 @@ func (c *cloudflareClient) get(ctx context.Context, path string, query map[strin
 
 /* ---------- API 数据结构（字段取自 CF Pages API 实际返回） ---------- */
 
+type cfEnvVar struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+
+type cfDeploymentConfig struct {
+	EnvVars map[string]cfEnvVar `json:"env_vars"`
+}
+
 type cfProject struct {
 	Name             string        `json:"name"`
 	Subdomain        string        `json:"subdomain"`
@@ -90,6 +99,25 @@ type cfProject struct {
 	ProductionBranch string        `json:"production_branch"`
 	CreatedOn        string        `json:"created_on"`
 	LatestDeployment *cfDeployment `json:"latest_deployment"`
+
+	// 构建环境变量：其中的后端地址用于判断该站点是否依赖本机服务
+	DeploymentConfigs struct {
+		Production cfDeploymentConfig `json:"production"`
+		Preview    cfDeploymentConfig `json:"preview"`
+	} `json:"deployment_configs"`
+}
+
+// apiBaseURLs 收集项目构建配置里指向后端的地址（如 VITE_API_BASE）
+func (p cfProject) apiBaseURLs() []string {
+	var out []string
+	for _, cfg := range []cfDeploymentConfig{p.DeploymentConfigs.Production, p.DeploymentConfigs.Preview} {
+		for name, ev := range cfg.EnvVars {
+			if ev.Value != "" && strings.Contains(strings.ToUpper(name), "API_BASE") {
+				out = append(out, ev.Value)
+			}
+		}
+	}
+	return out
 }
 
 type cfStage struct {
@@ -183,6 +211,7 @@ type pagesProjectView struct {
 	SiteURL          string                `json:"site_url"`
 	DashboardURL     string                `json:"dashboard_url"`
 	ProductionBranch string                `json:"production_branch"`
+	Platforms        []string              `json:"platforms"` // 检测到的平台：cf（Pages 本身）+ oci（后端 API 在本机）
 	Latest           *pagesDeploymentView  `json:"latest"`
 	Recent           []pagesDeploymentView `json:"recent"`
 }
@@ -195,6 +224,12 @@ func buildPagesProjectView(p cfProject, deps []cfDeployment, accountID string) p
 		SiteURL:          "https://" + p.Subdomain,
 		DashboardURL:     "https://dash.cloudflare.com/" + accountID + "/pages/view/" + p.Name,
 		Recent:           []pagesDeploymentView{},
+	}
+	// 站点本身托管在 Cloudflare Pages；若其配置的后端地址由本机 cloudflared 隧道暴露，
+	// 说明还依赖跑在本机（OCI）的服务
+	v.Platforms = []string{PlatformCF}
+	if exposedByTunnel(p.apiBaseURLs()) {
+		v.Platforms = append(v.Platforms, PlatformOCI)
 	}
 	for _, d := range p.Domains {
 		if !strings.HasSuffix(d, ".pages.dev") {

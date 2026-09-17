@@ -342,7 +342,19 @@
     .progress.on { display: block; }
     .progress-bar { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .3s; }
 
-    .card-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 3px; }
+    .card-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 3px; flex-wrap: wrap; row-gap: 8px; }
+
+    /* 平台品牌徽章 */
+    .platforms { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .platforms:empty { display: none; }
+    .plat { display: inline-flex; align-items: center; gap: 5px; }
+    .plat-ico {
+      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,.45);
+    }
+    .plat-ico svg { width: 11px; height: 11px; display: block; }
+    .plat-name { font-size: 10.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
     .switch-label { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
     .switch { position: relative; width: 38px; height: 22px; border-radius: 999px; background: #2a3247; transition: background .2s; flex-shrink: 0; }
     .switch::after {
@@ -781,6 +793,53 @@
       }
     }
 
+    /* ---------- 平台品牌徽章（蒲公英 / Cloudflare / OCI） ---------- */
+    // 平台由后端按实际信号检测得出，前端只负责展示对应品牌标识
+    const PLATFORMS = {
+      pgyer: {
+        name: '蒲公英',
+        color: '#3cbf6a',
+        hint: '蒲公英：APK 内测分发',
+        glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round">' +
+          '<path d="M12 9.6V20"/><path d="M12 9.6 12 4.4"/><path d="M12 9.6 7.6 6.1"/><path d="M12 9.6l4.4-3.5"/>' +
+          '<path d="M12 9.6 6.8 9.6"/><path d="M12 9.6h5.2"/><path d="M9.4 13.6 7.2 12.2"/><path d="M14.6 13.6l2.2-1.4"/>' +
+          '<circle cx="12" cy="9.6" r="1.7" fill="#fff" stroke="none"/></svg>'
+      },
+      cf: {
+        name: 'Cloudflare',
+        color: '#f6821f',
+        hint: 'Cloudflare：Pages 构建 / Workers / Tunnel 入口',
+        glyph: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M18.2 18.6a4.1 4.1 0 0 0 .43-8.18 5.5 5.5 0 0 0-10.66-1.2A3.9 3.9 0 0 0 7.9 18.6z"/><path d="M16.6 12.7c.3-.9-.16-1.9-1.2-2.1-.36-.07-.77-.06-1.3.06l-3.5.9-.3.5.44.06 3.4.5c.6.06.85.55.6 1.06l-.2.5.4.02c.5.05.94-.2 1.16-.7z" opacity=".45"/></svg>'
+      },
+      oci: {
+        name: 'OCI',
+        color: '#c74634',
+        hint: 'OCI 主机：self-hosted 部署的服务，公网经 Cloudflare 隧道进入',
+        glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6"><ellipse cx="12" cy="12" rx="7" ry="4.6"/></svg>'
+      }
+    };
+
+    // 固定展示顺序：分发 → 边缘 → 主机
+    const PLATFORM_ORDER = ['pgyer', 'cf', 'oci'];
+
+    function platformBadges(keys) {
+      const wrap = el('span', 'platforms');
+      const present = new Set(keys || []);
+      PLATFORM_ORDER.forEach(k => {
+        const p = PLATFORMS[k];
+        if (!present.has(k) || !p) return;
+        const b = el('span', 'plat');
+        b.title = p.hint;
+        const ico = el('span', 'plat-ico');
+        ico.style.background = p.color;
+        ico.innerHTML = p.glyph;
+        b.appendChild(ico);
+        b.appendChild(el('span', 'plat-name', p.name));
+        wrap.appendChild(b);
+      });
+      return wrap;
+    }
+
     /* ---------- 弹窗 / 菜单 ---------- */
     function openDetail(title, text) {
       document.getElementById('detailTitle').textContent = title;
@@ -1023,6 +1082,7 @@
       card.appendChild(prog);
 
       const foot = el('div', 'card-foot');
+      foot.appendChild(platformBadges(r.platforms));
       const swLabel = el('label', 'switch-label');
       const sw = el('span', 'switch' + (r.auto_sync ? ' on' : ''));
       swLabel.appendChild(document.createTextNode('自动同步'));
@@ -1289,6 +1349,7 @@
       }
 
       const foot = el('div', 'card-foot');
+      foot.appendChild(platformBadges(svc.platforms));
       if (svc.private) {
         const pb = el('span', 'badge private', '私有');
         pb.title = '私有仓库：GitHub 的运行日志页需在已登录且有权限的浏览器中打开，否则会返回 404';
@@ -1506,6 +1567,7 @@
       }
 
       const foot = el('div', 'card-foot');
+      foot.appendChild(platformBadges(p.platforms));
       const envBadge = el('span', 'badge private', l && l.environment === 'preview' ? '预览环境' : '生产环境');
       foot.appendChild(envBadge);
       const wf = el('div', 'wf-names', '生产分支 ' + (p.production_branch || '-'));
@@ -1599,7 +1661,8 @@
         ['数据文件', el('span', 'row-value', health.data_file || '-')],
         ['CLOUDFLARE_API_TOKEN', tag(!!health.cloudflare_token)],
         ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)],
-        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')]
+        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')],
+        ['隧道域名（平台检测用）', el('span', 'row-value', health.tunnel_hosts || '未读取到 cloudflared 配置')]
       ];
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');

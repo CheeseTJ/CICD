@@ -124,3 +124,27 @@
 - `CLOUDFLARE_API_TOKEN`：Cloudflare API Token，权限 `Pages:Read` 即可；未配置时 `/api/pages` 返回 `configured=false`，视图给出提示而不是报错
 - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID
 - `CF_PAGES_PROJECTS`：可选，逗号分隔的项目白名单，留空表示展示账号下全部 Pages 项目
+- `CLOUDFLARED_CONFIG`：可选，cloudflared 配置路径（默认 `/etc/cloudflared/config.yml`，容器内只读挂载），用于平台检测
+
+## 13. 平台徽章（检测而非固定）
+
+卡片底部展示该对象**实际涉及**的平台徽章，当前平台集合为：蒲公英 / Cloudflare / OCI。
+徽章不是按卡片类型写死的，而是按可用信号检测后贴出：
+
+| 卡片 | 检测信号 | 判定 |
+|---|---|---|
+| 应用 | 状态文件里已有同步记录 / 关联信息（`last_synced_tag`、`identifier`、`pgyer_shortcut_url`） | 蒲公英 |
+| 应用 | 仓库 workflow 原文 | 见下方通用规则 |
+| 部署 | 仓库 workflow 原文（最多读 3 个） | 见下方通用规则 |
+| 前端站点 | 它本身就是 Cloudflare Pages 项目 | Cloudflare |
+| 前端站点 | 构建环境变量里的后端地址（如 `VITE_API_BASE`）命中本机 cloudflared 隧道域名 | OCI |
+
+通用 workflow 规则（`detectPlatforms`）：
+
+- 出现 `pgyer.com` / `蒲公英` → 蒲公英（只凭 `pgyer` 字样会误判：`music-flutter`、
+  `cicd` 只是把 `PGYER_API_KEY` 传给构建，真正上传由本控制台完成）
+- 出现 `wrangler` / `api.cloudflare.com` / `cloudflare/pages` → Cloudflare
+- 出现 `self-hosted` → OCI，同时含 Cloudflare（这类服务的公网入口统一经 cloudflared 隧道）
+
+检测失败（读不到 workflow、读不到 cloudflared 配置）不报错、不阻断展示，只是该卡片少一个徽章；
+「设置」页展示读取到的隧道域名便于排查。
