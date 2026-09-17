@@ -338,6 +338,18 @@
     .time { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); }
     .time svg { flex-shrink: 0; color: var(--muted-dim); }
 
+    /* 应用卡片上合并展示的构建信息（Actions 最近运行） */
+    .build-line { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+    .build-line.link { cursor: pointer; }
+    .build-line.link:hover .build-status { text-decoration: underline; text-underline-offset: 3px; }
+    .build-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+    .build-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .build-status.ok { color: var(--green); }
+    .build-status.bad { color: #ff8f8f; }
+    .build-status.off { color: var(--muted-dim); }
+    .build-status.run { color: #7eb0ff; }
+    .build-meta { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
     .progress { display: none; height: 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
     .progress.on { display: block; }
     .progress-bar { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .3s; }
@@ -721,11 +733,11 @@
       return h;
     }
 
-    function tileStyle(name, platform) {
+    // 图标表达对象类型：部署视图=后端服务（芯片）、前端站点=云、应用=手机；
+    // 卡片底部平台徽章负责标注真实平台（OCI / Cloudflare / 蒲公英）
+    function tileStyle(name, icon) {
       const g = GRADIENTS[hash(name) % GRADIENTS.length];
-      // 图标只表达「主体部署在哪」，与底部平台徽章一致；未知平台用中性 box 兜底
-      const icon = (platform && PLATFORMS[platform] && PLATFORMS[platform].icon) || 'box';
-      return { background: 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')', icon };
+      return { background: 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')', icon: icon || 'box' };
     }
 
     // 后端写入的时间是 UTC；老数据没有时区标记，补上 Z 才能解析成正确的瞬时。
@@ -789,7 +801,6 @@
       pgyer: {
         name: '蒲公英',
         color: '#3cbf6a',
-        icon: 'smartphone',
         hint: '蒲公英：APK 内测分发',
         glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round">' +
           '<path d="M12 9.6V20"/><path d="M12 9.6 12 4.4"/><path d="M12 9.6 7.6 6.1"/><path d="M12 9.6l4.4-3.5"/>' +
@@ -799,14 +810,12 @@
       cf: {
         name: 'Cloudflare',
         color: '#f6821f',
-        icon: 'cloud',
         hint: 'Cloudflare：Pages 构建 / Workers / Tunnel 入口',
         glyph: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M18.2 18.6a4.1 4.1 0 0 0 .43-8.18 5.5 5.5 0 0 0-10.66-1.2A3.9 3.9 0 0 0 7.9 18.6z"/><path d="M16.6 12.7c.3-.9-.16-1.9-1.2-2.1-.36-.07-.77-.06-1.3.06l-3.5.9-.3.5.44.06 3.4.5c.6.06.85.55.6 1.06l-.2.5.4.02c.5.05.94-.2 1.16-.7z" opacity=".45"/></svg>'
       },
       oci: {
         name: 'OCI',
         color: '#c74634',
-        icon: 'cpu',
         hint: 'OCI 主机：服务部署在 Oracle Cloud 本机',
         glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6"><ellipse cx="12" cy="12" rx="7" ry="4.6"/></svg>'
       }
@@ -983,7 +992,7 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const st = tileStyle(r.full_name, r.platform);
+      const st = tileStyle(r.full_name, 'smartphone'); // 应用 = 手机图标
       const tile = el('div', 'tile');
       tile.style.background = st.background;
       tile.innerHTML = svg(st.icon, 22);
@@ -1002,16 +1011,23 @@
       const moreBtn = el('button', 'icon-btn');
       moreBtn.innerHTML = svg('dots', 18);
       moreBtn.title = '更多操作';
+      // 构建信息来自「部署」视图同一份数据（应用仓库不在部署视图重复展示）
+      const buildSvc = services.find(s => s.full_name === r.full_name);
       moreBtn.onclick = e => {
         e.stopPropagation();
         openMenu(moreBtn, [
+          {
+            icon: 'play', label: '查看构建日志',
+            disabled: !(buildSvc && buildSvc.latest && buildSvc.latest.html_url),
+            onClick: () => window.open(buildSvc.latest.html_url, '_blank', 'noopener')
+          },
           {
             icon: 'external', label: '查看 GitHub Release',
             disabled: !r.latest_html_url,
             onClick: () => window.open(r.latest_html_url, '_blank', 'noopener')
           },
           {
-            icon: 'play', label: '打开蒲公英下载页',
+            icon: 'smartphone', label: '打开蒲公英下载页',
             disabled: !r.pgyer_shortcut_url,
             onClick: () => window.open(r.pgyer_shortcut_url, '_blank', 'noopener')
           },
@@ -1063,6 +1079,39 @@
       ));
       time.title = ts ? ('上次同步：' + localTime(ts)) : '尚未同步过';
       card.appendChild(time);
+
+      // 合并构建信息：展示该应用仓库的 Actions 最近运行状态（原「部署」视图内容）
+      if (buildSvc && buildSvc.latest) {
+        const l = buildSvc.latest;
+        const rs = runStatus(l.status);
+        const build = el('div', 'build-line');
+        const bs = el('span', 'build-status ' + rs.cls);
+        bs.appendChild(el('span', 'dot'));
+        bs.appendChild(document.createTextNode('构建' + rs.text));
+        build.appendChild(bs);
+        const meta = el('span', 'build-meta',
+          (buildSvc.workflow_names[0] || 'workflow') + ' #' + l.run_number +
+          (l.branch ? ' · ' + l.branch : '') + ' · ' + relTime(isoUnix(l.updated_at)));
+        build.appendChild(meta);
+        const tips = [l.title];
+        if (l.duration_sec) tips.push('耗时 ' + formatDur(l.duration_sec));
+        build.title = tips.filter(Boolean).join(' · ');
+        if (l.html_url) {
+          build.classList.add('link');
+          build.onclick = () => window.open(l.html_url, '_blank', 'noopener');
+        }
+        card.appendChild(build);
+
+        if (buildSvc.recent && buildSvc.recent.length > 1) {
+          const hist = el('div', 'history');
+          buildSvc.recent.slice(1).forEach(rr => {
+            const d = el('span', 'hist-dot ' + runStatus(rr.status).cls);
+            d.title = rr.name + ' #' + rr.run_number + ' · ' + runStatus(rr.status).text;
+            hist.appendChild(d);
+          });
+          card.appendChild(hist);
+        }
+      }
 
       const prog = el('div', 'progress');
       const progBar = el('div', 'progress-bar');
@@ -1253,7 +1302,7 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const st = tileStyle(svc.full_name, svc.platform);
+      const st = tileStyle(svc.full_name, 'cpu'); // 部署视图 = 后端服务，统一芯片图标
       const tile = el('div', 'tile');
       tile.style.background = st.background;
       tile.innerHTML = svg(st.icon, 22);
@@ -1408,6 +1457,7 @@
         services = data.services || [];
         deployLoaded = true;
         renderDeployments();
+        render(); // 应用卡片合并了构建信息，部署数据到位后重渲染一次
       } catch (e) {
         const banner = document.getElementById('banner');
         banner.textContent = '加载部署信息失败：' + e.message;
@@ -1468,7 +1518,7 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const st = tileStyle(p.name, p.platform); // platform=cf → cloud 图标
+      const st = tileStyle(p.name, 'cloud'); // 前端站点 = 云图标
       const tile = el('div', 'tile');
       tile.style.background = st.background;
       tile.innerHTML = svg(st.icon, 22);
