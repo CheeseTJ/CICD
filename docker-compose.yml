@@ -22,8 +22,6 @@ services:
       # 用命名卷而非绑定挂载：自动部署会在 runner 工作区重建容器，
       # 绑定挂载会跟着切换到空的 ./data，命名卷则跨工作区保持状态
       - cicd-console-data:/app/data
-      # 只读挂载 cloudflared 配置：用于识别哪些域名由本机隧道暴露（平台检测用）
-      - /etc/cloudflared:/etc/cloudflared:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
       interval: 30s

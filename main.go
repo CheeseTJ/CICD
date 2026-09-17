@@ -123,7 +123,7 @@ type repoView struct {
 	LastSyncedAt      string `json:"last_synced_at"`
 	LastSyncedAtUnix  int64  `json:"last_synced_at_unix"`
 
-	Platforms []string `json:"platforms"` // 检测到的平台：pgyer / cf / oci
+	Platform string `json:"platform"` // 主体平台：pgyer / cf / oci，空表示判断不出
 }
 
 func main() {
@@ -180,7 +180,6 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"cloudflare_token":      s.cfg.CFToken != "",
 		"cloudflare_account_id": s.cfg.CFAccountID != "",
 		"cf_pages_projects":     strings.Join(s.cfg.CFProjects, ","),
-		"tunnel_hosts":          strings.Join(tunnelHostList(), ","),
 	})
 }
 
@@ -290,37 +289,6 @@ func (s *server) handleRepos(w http.ResponseWriter, r *http.Request) {
 		views = append(views, s.buildRepoView(repo, rels[i], byIdentifier))
 	}
 
-	// 应用卡片也按 workflow 内容检测平台（例如既发 APK 又部署站点），
-	// 只对确实是应用的仓库额外读取；单个失败不影响展示。
-	var appIdx []int
-	for i := range views {
-		if views[i].IsApp {
-			appIdx = append(appIdx, i)
-		}
-	}
-	if len(appIdx) > 0 {
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 4)
-		for _, i := range appIdx {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(i int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				owner, name := splitFullName(views[i].FullName)
-				c, cancel := context.WithTimeout(ctx, 20*time.Second)
-				defer cancel()
-				wfs, err := s.gh.listWorkflows(c, owner, name)
-				if err != nil || len(wfs) == 0 {
-					return
-				}
-				texts := s.gh.workflowTexts(c, owner, name, wfs, 2)
-				views[i].Platforms = mergePlatforms(views[i].Platforms, detectPlatforms(texts...))
-			}(i)
-		}
-		wg.Wait()
-	}
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{"repos": views})
 }
 
@@ -347,7 +315,7 @@ type serviceView struct {
 	Private       bool      `json:"private"`
 	Archived      bool      `json:"archived"`
 	WorkflowNames []string  `json:"workflow_names"`
-	Platforms     []string  `json:"platforms"` // 部署平台：cf（Cloudflare）/ oci（本机，经 CF 隧道）
+	Platform      string    `json:"platform"` // 主体平台：cf / oci / pgyer，空表示判断不出
 	Latest        *runView  `json:"latest"`
 	Recent        []runView `json:"recent"`
 }
@@ -414,10 +382,10 @@ func (s *server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 				names = append(names, wf.Name)
 			}
 
-			// 读取 workflow 原文件，按内容检测实际部署平台（self-hosted=本机 OCI，
-			// wrangler=Cloudflare）。读取失败不阻断卡片展示，只是不显示平台徽章。
+			// 读取 workflow 原文，判断主体部署位置（self-hosted=本机 OCI，wrangler=Cloudflare）；
+			// 读不到就退回"产物是否分发在蒲公英"。都不影响卡片展示。
 			texts := s.gh.workflowTexts(c, owner, name, wfs, 3)
-			platforms := detectPlatforms(texts...)
+			platform := servicePlatform(texts, s.store.Get(repo.FullName))
 
 			runs, _ := s.gh.listRuns(c, owner, name, recentLimit)
 			svc := &serviceView{
@@ -429,7 +397,7 @@ func (s *server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 				Private:       repo.Private,
 				Archived:      repo.Archived,
 				WorkflowNames: names,
-				Platforms:     platforms,
+				Platform:      platform,
 			}
 			for _, run := range runs {
 				svc.Recent = append(svc.Recent, toRunView(run))
@@ -502,9 +470,9 @@ func (s *server) buildRepoView(repo GHRepo, rel *GHRelease, byIdentifier map[str
 		v.LastSyncedAt = st.LastSyncedAt
 		v.LastSyncedAtUnix = st.LastSyncedAtUnix
 		v.AutoSync = st.AutoSync
-		// 已同步过（或有关联信息）说明确实分发在蒲公英上
-		if st.LastSyncedTag != "" || st.Identifier != "" || st.PgyerShortcutUrl != "" {
-			v.Platforms = mergePlatforms([]string{PlatformPgyer})
+		// 已由本控制台同步过 → 产物分发在蒲公英
+		if syncedToPgyer(st) {
+			v.Platform = PlatformPgyer
 		}
 		if st.PgyerShortcutUrl != "" {
 			v.PgyerShortcutUrl = st.PgyerShortcutUrl

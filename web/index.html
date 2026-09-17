@@ -327,7 +327,7 @@
     }
     .badge.auto { color: #7eb0ff; border-color: rgba(59, 130, 246, 0.5); background: var(--accent-soft); }
     .badge.manual { color: var(--orange); border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.1); }
-    .badge.private { color: var(--muted-dim); }
+    .badge.env { color: var(--muted-dim); flex-shrink: 0; }
 
     .versions { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 600; flex-wrap: wrap; }
     .versions .cur { color: var(--muted); font-weight: 500; }
@@ -342,12 +342,10 @@
     .progress.on { display: block; }
     .progress-bar { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .3s; }
 
-    .card-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 3px; flex-wrap: wrap; row-gap: 8px; }
+    .card-foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 3px; }
 
-    /* 平台品牌徽章 */
-    .platforms { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .platforms:empty { display: none; }
-    .plat { display: inline-flex; align-items: center; gap: 5px; }
+    /* 平台品牌徽章（每张卡片只标主体所在的一个平台） */
+    .plat { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
     .plat-ico {
       width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0;
       display: inline-flex; align-items: center; justify-content: center;
@@ -365,7 +363,7 @@
     .switch.on { background: var(--accent-strong); }
     .switch.on::after { transform: translateX(16px); background: #fff; }
     .switch-label.disabled { opacity: 0.5; cursor: not-allowed; }
-    .foot-right { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .foot-right { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; flex-shrink: 0; }
     .sync-msg {
       font-size: 12px; color: var(--muted);
       max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -793,8 +791,7 @@
       }
     }
 
-    /* ---------- 平台品牌徽章（蒲公英 / Cloudflare / OCI） ---------- */
-    // 平台由后端按实际信号检测得出，前端只负责展示对应品牌标识
+    // 平台由后端判断「主体在哪」得出（单个），前端只负责展示对应品牌标识
     const PLATFORMS = {
       pgyer: {
         name: '蒲公英',
@@ -814,30 +811,23 @@
       oci: {
         name: 'OCI',
         color: '#c74634',
-        hint: 'OCI 主机：self-hosted 部署的服务，公网经 Cloudflare 隧道进入',
+        hint: 'OCI 主机：服务部署在 Oracle Cloud 本机',
         glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6"><ellipse cx="12" cy="12" rx="7" ry="4.6"/></svg>'
       }
     };
 
-    // 固定展示顺序：分发 → 边缘 → 主机
-    const PLATFORM_ORDER = ['pgyer', 'cf', 'oci'];
-
-    function platformBadges(keys) {
-      const wrap = el('span', 'platforms');
-      const present = new Set(keys || []);
-      PLATFORM_ORDER.forEach(k => {
-        const p = PLATFORMS[k];
-        if (!present.has(k) || !p) return;
-        const b = el('span', 'plat');
-        b.title = p.hint;
-        const ico = el('span', 'plat-ico');
-        ico.style.background = p.color;
-        ico.innerHTML = p.glyph;
-        b.appendChild(ico);
-        b.appendChild(el('span', 'plat-name', p.name));
-        wrap.appendChild(b);
-      });
-      return wrap;
+    // platformBadge 返回单个平台徽章；平台为空或未知时返回 null（调用方跳过）
+    function platformBadge(key) {
+      const p = PLATFORMS[key];
+      if (!p) return null;
+      const b = el('span', 'plat');
+      b.title = p.hint;
+      const ico = el('span', 'plat-ico');
+      ico.style.background = p.color;
+      ico.innerHTML = p.glyph;
+      b.appendChild(ico);
+      b.appendChild(el('span', 'plat-name', p.name));
+      return b;
     }
 
     /* ---------- 弹窗 / 菜单 ---------- */
@@ -1082,7 +1072,8 @@
       card.appendChild(prog);
 
       const foot = el('div', 'card-foot');
-      foot.appendChild(platformBadges(r.platforms));
+      const appPlat = platformBadge(r.platform);
+      if (appPlat) foot.appendChild(appPlat);
       const swLabel = el('label', 'switch-label');
       const sw = el('span', 'switch' + (r.auto_sync ? ' on' : ''));
       swLabel.appendChild(document.createTextNode('自动同步'));
@@ -1349,12 +1340,8 @@
       }
 
       const foot = el('div', 'card-foot');
-      foot.appendChild(platformBadges(svc.platforms));
-      if (svc.private) {
-        const pb = el('span', 'badge private', '私有');
-        pb.title = '私有仓库：GitHub 的运行日志页需在已登录且有权限的浏览器中打开，否则会返回 404';
-        foot.appendChild(pb);
-      }
+      const svcPlat = platformBadge(svc.platform);
+      if (svcPlat) foot.appendChild(svcPlat);
       const wf = el('div', 'wf-names', svc.workflow_names.join(' · '));
       wf.title = 'workflow：' + svc.workflow_names.join(' · ');
       foot.appendChild(wf);
@@ -1567,9 +1554,8 @@
       }
 
       const foot = el('div', 'card-foot');
-      foot.appendChild(platformBadges(p.platforms));
-      const envBadge = el('span', 'badge private', l && l.environment === 'preview' ? '预览环境' : '生产环境');
-      foot.appendChild(envBadge);
+      const pgPlat = platformBadge(p.platform);
+      if (pgPlat) foot.appendChild(pgPlat);
       const wf = el('div', 'wf-names', '生产分支 ' + (p.production_branch || '-'));
       wf.title = '自定义域名：' + ((p.custom_domains && p.custom_domains.length) ? p.custom_domains.join(' · ') : '无');
       foot.appendChild(wf);
@@ -1661,8 +1647,7 @@
         ['数据文件', el('span', 'row-value', health.data_file || '-')],
         ['CLOUDFLARE_API_TOKEN', tag(!!health.cloudflare_token)],
         ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)],
-        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')],
-        ['隧道域名（平台检测用）', el('span', 'row-value', health.tunnel_hosts || '未读取到 cloudflared 配置')]
+        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')]
       ];
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');
