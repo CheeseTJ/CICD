@@ -486,6 +486,38 @@
       .topbar { padding: 14px 16px; }
       .stats { grid-template-columns: 1fr; }
     }
+    /* ---------- 登录门禁 ---------- */
+    .login-mask {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(3, 6, 14, 0.85);
+      backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+    }
+    .login-mask.show { display: flex; }
+    .login-box {
+      width: min(380px, calc(100vw - 40px));
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 26px 24px 20px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+    }
+    .login-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .login-brand .brand-logo { font-size: 22px; color: var(--accent); }
+    .login-brand .login-brand-name { font-size: 15px; font-weight: 600; }
+    .login-tip { font-size: 12.5px; color: var(--muted); margin-bottom: 18px; }
+    .login-field { margin-bottom: 12px; }
+    .login-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .login-field input {
+      width: 100%; box-sizing: border-box;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); padding: 10px 12px;
+      font-size: 13px; font-family: inherit; outline: none;
+    }
+    .login-field input:focus { border-color: var(--accent); }
+    .login-error { min-height: 17px; margin: 2px 0 10px; font-size: 12px; color: #ef4444; }
+    .login-submit { width: 100%; justify-content: center; }
+    .login-hint { margin-top: 12px; font-size: 11.5px; color: var(--muted-dim); text-align: center; }
   </style>
 </head>
 <body>
@@ -649,6 +681,28 @@
     </div>
   </div>
 
+  <!-- 登录门禁：配置 USER_CENTER_URL 后，未登录时覆盖整页（账号由用户中心提供） -->
+  <div class="login-mask" id="loginMask">
+    <form class="login-box" id="loginForm">
+      <div class="login-brand">
+        <div class="brand-logo">&#8734;</div>
+        <div class="login-brand-name">CI/CD 管理平台</div>
+      </div>
+      <div class="login-tip">请使用用户中心账号登录</div>
+      <div class="login-field">
+        <label for="loginEmail">邮箱</label>
+        <input id="loginEmail" type="email" autocomplete="username" required />
+      </div>
+      <div class="login-field">
+        <label for="loginPassword">密码</label>
+        <input id="loginPassword" type="password" autocomplete="current-password" required />
+      </div>
+      <div class="login-error" id="loginError"></div>
+      <button class="btn primary login-submit" id="loginSubmit" type="submit">登录</button>
+      <div class="login-hint" id="loginHint"></div>
+    </form>
+  </div>
+
   <script>
     const ICONS = {
       home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5.6 9.7V20a1 1 0 0 0 1 1h10.8a1 1 0 0 0 1-1V9.7"/>',
@@ -718,8 +772,112 @@
       });
     }
 
+    /* ---------- 登录态（用户中心的 access_token）---------- */
+    const AUTH_KEYS = {
+      access: 'cicd_access_token',
+      refresh: 'cicd_refresh_token',
+      device: 'cicd_device_id',
+      email: 'cicd_email'
+    };
+    // 由 /api/health 填充：是否需要登录、用户中心地址、本服务的 app 标识
+    let authConfig = { required: false, app: 'cicd', url: '' };
+    let refreshInflight = null;
+
+    function authGet(key) { try { return localStorage.getItem(AUTH_KEYS[key]) || ''; } catch (e) { return ''; } }
+    function authSet(key, value) {
+      try { value ? localStorage.setItem(AUTH_KEYS[key], value) : localStorage.removeItem(AUTH_KEYS[key]); } catch (e) { /* 隐私模式下忽略 */ }
+    }
+    function authClear() { ['access', 'refresh', 'email'].forEach(k => authSet(k, '')); }
+
+    // 设备标识持久化：用户中心靠它把令牌归到同一台设备，便于在「我的设备」里单独吊销
+    function deviceId() {
+      let d = authGet('device');
+      if (!d) {
+        d = 'web_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+        authSet('device', d);
+      }
+      return d;
+    }
+
+    function ucEndpoint(path) { return authConfig.url.replace(/\/$/, '') + path; }
+
+    async function ucAuth(path, payload) {
+      const res = await fetch(ucEndpoint(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || data.error || ('请求失败 ' + res.status));
+      return data;
+    }
+
+    async function ucLogin(email, password) {
+      const data = await ucAuth('/v1/auth/login', {
+        email, password, app: authConfig.app,
+        device_id: deviceId(), device_name: 'CI/CD 管理平台', platform: 'web'
+      });
+      authSet('access', data.access_token);
+      authSet('refresh', data.refresh_token);
+      authSet('device', data.device_id);
+      authSet('email', email);
+      return data;
+    }
+
+    // 多个请求同时 401 时只刷新一次，避免刷新令牌被并发复用（会被判为泄露而吊销整条链）
+    async function ucRefresh() {
+      if (refreshInflight) return refreshInflight;
+      const rt = authGet('refresh');
+      if (!rt) throw new Error('未登录');
+      refreshInflight = (async () => {
+        const data = await ucAuth('/v1/auth/refresh', { refresh_token: rt, app: authConfig.app });
+        authSet('access', data.access_token);
+        authSet('refresh', data.refresh_token);
+        return data;
+      })();
+      try { return await refreshInflight; } finally { refreshInflight = null; }
+    }
+
+    async function ucLogout() {
+      const rt = authGet('refresh');
+      if (rt && authConfig.url) {
+        // 顺手在服务端吊销刷新令牌；失败也不影响本地退出
+        try { await ucAuth('/v1/auth/logout', { refresh_token: rt }); } catch (e) { /* 忽略 */ }
+      }
+      authClear();
+    }
+
+    function showLogin(message) {
+      document.getElementById('loginError').textContent = message || '';
+      document.getElementById('loginHint').textContent = authConfig.url
+        ? '账号由 ' + authConfig.url.replace(/^https?:\/\//, '') + ' 提供'
+        : '';
+      document.getElementById('loginMask').classList.add('show');
+      setTimeout(() => document.getElementById('loginEmail').focus(), 60);
+    }
+    function hideLogin() { document.getElementById('loginMask').classList.remove('show'); }
+    function requireLogin(message) { authClear(); showLogin(message); }
+
+    // 所有请求的统一出口：自动附访问令牌；401 时刷新一次再重试；仍失败则弹登录框。
     async function api(path, opts) {
-      const res = await fetch(path, opts);
+      const req = opts || {};
+      const send = () => {
+        const headers = Object.assign({}, req.headers);
+        const token = authGet('access');
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        return fetch(path, Object.assign({}, req, { headers }));
+      };
+
+      let res = await send();
+      if (res.status === 401 && authConfig.required) {
+        try {
+          await ucRefresh();
+          res = await send();
+        } catch (e) {
+          requireLogin('登录已过期，请重新登录');
+          throw new Error('登录已过期');
+        }
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ('请求失败 ' + res.status));
       return data;
@@ -920,6 +1078,16 @@
       const banner = document.getElementById('banner');
       try {
         health = await api('/api/health');
+        authConfig = {
+          required: !!health.auth_required,
+          app: health.auth_app || 'cicd',
+          url: health.user_center_url || ''
+        };
+        // 未登录时后端只回鉴权字段、不下发配置明细，此时不该报「缺少环境变量」
+        if (health.auth_required && health.github_token === undefined) {
+          banner.classList.remove('show');
+          return;
+        }
         const missing = [];
         if (!health.github_token) missing.push('GITHUB_TOKEN');
         if (!health.pgyer_key) missing.push('PGYER_API_KEY');
@@ -1691,7 +1859,7 @@
         t.appendChild(document.createTextNode(ok ? '已配置' : '未配置'));
         return t;
       };
-      const rows = [
+      let rows = [
         ['GITHUB_TOKEN', tag(!!health.github_token)],
         ['PGYER_API_KEY', tag(!!health.pgyer_key)],
         ['GITHUB_OWNER', el('span', 'row-value', health.github_owner || '当前登录用户（含私有仓库）')],
@@ -1701,6 +1869,12 @@
         ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)],
         ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')]
       ];
+      if (authConfig.required) {
+        rows = [
+          ['登录鉴权', tag(true)],
+          ['当前账号', el('span', 'row-value', authGet('email') || health.account_email || '已登录')]
+        ].concat(rows);
+      }
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');
         row.appendChild(el('div', 'row-label', label));
@@ -1708,6 +1882,22 @@
         else { const w = el('div'); w.appendChild(node); row.appendChild(w); }
         panel.appendChild(row);
       });
+
+      if (authConfig.required) {
+        const row = el('div', 'row');
+        row.appendChild(el('div', 'row-label', '会话'));
+        const wrap = el('div');
+        const out = el('button', 'btn', '退出登录');
+        out.onclick = async () => {
+          out.disabled = true;
+          out.textContent = '退出中…';
+          await ucLogout();
+          location.reload();
+        };
+        wrap.appendChild(out);
+        row.appendChild(wrap);
+        panel.appendChild(row);
+      }
     }
 
     function renderModal() {
@@ -1812,14 +2002,52 @@
       };
     });
 
-    mountIcons();
-    renderPills();
-    renderDeployPills();
-    renderPagesPills();
-    loadHealth();
-    loadRepos();
-    loadDeployments();
-    loadPages();
+    /* ---------- 登录表单 ---------- */
+    document.getElementById('loginForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const err = document.getElementById('loginError');
+      const btn = document.getElementById('loginSubmit');
+      const label = btn.textContent;
+      err.textContent = '';
+      btn.disabled = true;
+      btn.textContent = '登录中…';
+      try {
+        await ucLogin(
+          document.getElementById('loginEmail').value.trim(),
+          document.getElementById('loginPassword').value
+        );
+        document.getElementById('loginPassword').value = '';
+        hideLogin();
+        await loadHealth();
+        startApp();
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    });
+
+    /* ---------- 启动 ---------- */
+    function startApp() {
+      loadRepos();
+      loadDeployments();
+      loadPages();
+    }
+
+    (async function boot() {
+      mountIcons();
+      renderPills();
+      renderDeployPills();
+      renderPagesPills();
+      // 必须先拿到 /api/health 才知道是否启用鉴权，进而决定是拦住还是直接进入
+      await loadHealth();
+      if (authConfig.required && !authGet('access')) {
+        showLogin('');
+        return;
+      }
+      startApp();
+    })();
   </script>
 </body>
 </html>

@@ -28,6 +28,7 @@ type config struct {
 	CFToken          string        // 可选：Cloudflare API Token（Pages:Read），用于展示 Pages 部署记录
 	CFAccountID      string        // 可选：Cloudflare 账号 ID
 	CFProjects       []string      // 可选：只展示这些 Pages 项目，空表示全部
+	Auth             authConfig    // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
 }
 
 func loadConfig() *config {
@@ -41,6 +42,11 @@ func loadConfig() *config {
 		CFToken:          os.Getenv("CLOUDFLARE_API_TOKEN"),
 		CFAccountID:      os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		CFProjects:       splitCSV(os.Getenv("CF_PAGES_PROJECTS")),
+		Auth: authConfig{
+			UserCenterURL: os.Getenv("USER_CENTER_URL"),
+			App:           getenv("USER_CENTER_APP", "cicd"),
+			AllowedEmails: splitCSV(os.Getenv("ALLOWED_EMAILS")),
+		},
 	}
 }
 
@@ -77,6 +83,7 @@ type server struct {
 	gh    *githubClient
 	pgyer *pgyerClient
 	cf    *cloudflareClient
+	auth  *authenticator
 
 	syncMu  sync.Mutex
 	syncing map[string]bool
@@ -140,24 +147,38 @@ func main() {
 		gh:      &githubClient{http: newHTTPClient(), token: cfg.GitHubToken},
 		pgyer:   &pgyerClient{http: newHTTPClient(), apiKey: cfg.PGYERKey},
 		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects},
+		auth:    newAuthenticator(cfg.Auth, newHTTPClient()),
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	// /api/health 保持公开：前端要先知道「是否启用鉴权、用户中心在哪」才能弹出登录框。
+	// 未登录时只返回鉴权相关字段，配置明细不外泄（见 handleHealth）。
 	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/repos", s.handleRepos)
-	mux.HandleFunc("/api/deployments", s.handleDeployments)
-	mux.HandleFunc("/api/pages", s.handlePages)
-	mux.HandleFunc("/api/repos/mark", s.handleMark)
-	mux.HandleFunc("/api/repos/autosync", s.handleAutoSync)
-	mux.HandleFunc("/api/repos/sync", s.handleSync)
-	mux.HandleFunc("/api/repos/sync/progress", s.handleSyncProgress)
+	mux.HandleFunc("/api/repos", s.auth.wrap(s.handleRepos))
+	mux.HandleFunc("/api/deployments", s.auth.wrap(s.handleDeployments))
+	mux.HandleFunc("/api/pages", s.auth.wrap(s.handlePages))
+	mux.HandleFunc("/api/repos/mark", s.auth.wrap(s.handleMark))
+	mux.HandleFunc("/api/repos/autosync", s.auth.wrap(s.handleAutoSync))
+	mux.HandleFunc("/api/repos/sync", s.auth.wrap(s.handleSync))
+	mux.HandleFunc("/api/repos/sync/progress", s.auth.wrap(s.handleSyncProgress))
 
 	s.startAutoSync()
 
 	addr := ":" + cfg.Port
+	if cfg.Auth.enabled() {
+		if len(cfg.Auth.AllowedEmails) > 0 {
+			log.Printf("已启用用户中心登录（%s，app=%s，邮箱白名单 %d 个）",
+				cfg.Auth.UserCenterURL, cfg.Auth.App, len(cfg.Auth.AllowedEmails))
+		} else {
+			log.Printf("已启用用户中心登录（%s，app=%s，未设邮箱白名单：任何已注册用户均可访问）",
+				cfg.Auth.UserCenterURL, cfg.Auth.App)
+		}
+	} else {
+		log.Printf("警告：未配置 USER_CENTER_URL，鉴权已关闭，接口对外裸奔")
+	}
 	log.Printf("cicd 启动: http://localhost%s (自动同步间隔 %s)", addr, cfg.AutoSyncInterval)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
@@ -170,17 +191,34 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                    true,
-		"github_token":          s.cfg.GitHubToken != "",
-		"pgyer_key":             s.cfg.PGYERKey != "",
-		"github_owner":          s.cfg.GitHubOwner,
-		"auto_sync_interval":    s.cfg.AutoSyncInterval.String(),
-		"data_file":             s.cfg.DataFile,
-		"cloudflare_token":      s.cfg.CFToken != "",
-		"cloudflare_account_id": s.cfg.CFAccountID != "",
-		"cf_pages_projects":     strings.Join(s.cfg.CFProjects, ","),
-	})
+	// 鉴权三字段始终返回：前端要先知道「是否需要登录、去哪个用户中心、用哪个 app」才能弹登录框。
+	// 用户中心地址与 app 标识都非密钥，公开无妨。
+	out := map[string]interface{}{
+		"ok":              true,
+		"auth_required":   s.cfg.Auth.enabled(),
+		"auth_app":        s.cfg.Auth.App,
+		"user_center_url": s.cfg.Auth.UserCenterURL,
+	}
+
+	// 未登录时不下发配置明细（哪些密钥已配置、数据文件路径等）
+	if s.cfg.Auth.enabled() {
+		claims := s.auth.authenticate(r)
+		if claims == nil {
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+		out["account_email"] = claims.Email
+	}
+
+	out["github_token"] = s.cfg.GitHubToken != ""
+	out["pgyer_key"] = s.cfg.PGYERKey != ""
+	out["github_owner"] = s.cfg.GitHubOwner
+	out["auto_sync_interval"] = s.cfg.AutoSyncInterval.String()
+	out["data_file"] = s.cfg.DataFile
+	out["cloudflare_token"] = s.cfg.CFToken != ""
+	out["cloudflare_account_id"] = s.cfg.CFAccountID != ""
+	out["cf_pages_projects"] = strings.Join(s.cfg.CFProjects, ",")
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handlePages 展示 Cloudflare Pages 站点与最近部署记录（只读，数据实时取自 CF API）。
