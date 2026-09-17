@@ -663,14 +663,6 @@
       trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>'
     };
 
-    const LANG_ICON = {
-      dart: 'box', flutter: 'box',
-      javascript: 'globe', typescript: 'globe', html: 'globe', css: 'globe', vue: 'globe', svelte: 'globe',
-      go: 'rocket', rust: 'cpu', c: 'cpu', 'c++': 'cpu', java: 'smartphone', kotlin: 'smartphone',
-      swift: 'smartphone', 'objective-c': 'smartphone', python: 'layers', ruby: 'layers', php: 'globe',
-      shell: 'cpu', 'c#': 'cpu'
-    };
-
     const GRADIENTS = [
       ['#3b82f6', '#8b5cf6'],
       ['#3b82f6', '#06b6d4'],
@@ -729,9 +721,10 @@
       return h;
     }
 
-    function tileStyle(name, language) {
+    function tileStyle(name, platform) {
       const g = GRADIENTS[hash(name) % GRADIENTS.length];
-      const icon = LANG_ICON[(language || '').toLowerCase()] || 'box';
+      // 图标只表达「主体部署在哪」，与底部平台徽章一致；未知平台用中性 box 兜底
+      const icon = (platform && PLATFORMS[platform] && PLATFORMS[platform].icon) || 'box';
       return { background: 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')', icon };
     }
 
@@ -796,6 +789,7 @@
       pgyer: {
         name: '蒲公英',
         color: '#3cbf6a',
+        icon: 'smartphone',
         hint: '蒲公英：APK 内测分发',
         glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round">' +
           '<path d="M12 9.6V20"/><path d="M12 9.6 12 4.4"/><path d="M12 9.6 7.6 6.1"/><path d="M12 9.6l4.4-3.5"/>' +
@@ -805,12 +799,14 @@
       cf: {
         name: 'Cloudflare',
         color: '#f6821f',
+        icon: 'cloud',
         hint: 'Cloudflare：Pages 构建 / Workers / Tunnel 入口',
         glyph: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M18.2 18.6a4.1 4.1 0 0 0 .43-8.18 5.5 5.5 0 0 0-10.66-1.2A3.9 3.9 0 0 0 7.9 18.6z"/><path d="M16.6 12.7c.3-.9-.16-1.9-1.2-2.1-.36-.07-.77-.06-1.3.06l-3.5.9-.3.5.44.06 3.4.5c.6.06.85.55.6 1.06l-.2.5.4.02c.5.05.94-.2 1.16-.7z" opacity=".45"/></svg>'
       },
       oci: {
         name: 'OCI',
         color: '#c74634',
+        icon: 'cpu',
         hint: 'OCI 主机：服务部署在 Oracle Cloud 本机',
         glyph: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6"><ellipse cx="12" cy="12" rx="7" ry="4.6"/></svg>'
       }
@@ -939,6 +935,8 @@
         repos = data.repos || [];
         render();
         renderModal();
+        // 应用列表影响部署视图的排除逻辑，已加载过则重渲染一次
+        if (deployLoaded) renderDeployments();
       } catch (e) {
         const banner = document.getElementById('banner');
         banner.textContent = '加载仓库失败：' + e.message;
@@ -985,7 +983,7 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const st = tileStyle(r.full_name, r.language);
+      const st = tileStyle(r.full_name, r.platform);
       const tile = el('div', 'tile');
       tile.style.background = st.background;
       tile.innerHTML = svg(st.icon, 22);
@@ -1255,7 +1253,7 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const st = tileStyle(svc.full_name, svc.language);
+      const st = tileStyle(svc.full_name, svc.platform);
       const tile = el('div', 'tile');
       tile.style.background = st.background;
       tile.innerHTML = svg(st.icon, 22);
@@ -1363,10 +1361,14 @@
     }
 
     function renderDeployments() {
-      document.getElementById('navDeployBadge').textContent = String(services.length);
-      renderDeployStats(services);
+      // 应用仓库（如 music-flutter）已在「应用」视图展示，这里排除避免重复
+      const appNames = new Set(repos.filter(r => r.is_app).map(r => r.full_name));
+      const visible = services.filter(s => !appNames.has(s.full_name));
 
-      let list = services.slice();
+      document.getElementById('navDeployBadge').textContent = String(visible.length);
+      renderDeployStats(visible);
+
+      let list = visible.slice();
       if (keyword) {
         const k = keyword.toLowerCase();
         list = list.filter(s =>
@@ -1380,7 +1382,7 @@
       if (deploySortBy === 'name') list.sort((a, b) => a.full_name.localeCompare(b.full_name));
       else list.sort((a, b) => isoUnix((b.latest || {}).updated_at) - isoUnix((a.latest || {}).updated_at));
 
-      document.getElementById('serviceCount').textContent = '共 ' + services.length + ' 个服务（自动发现带 workflow 的仓库）';
+      document.getElementById('serviceCount').textContent = '共 ' + visible.length + ' 个服务（自动发现带 workflow 的仓库，应用除外）';
 
       const grid = document.getElementById('deployGrid');
       grid.innerHTML = '';
@@ -1395,7 +1397,7 @@
         const icon = el('div', 'empty-icon');
         icon.innerHTML = svg('rocket', 48);
         empty.appendChild(icon);
-        empty.appendChild(el('div', '', services.length ? '没有符合条件的服务' : '没有发现配置了 GitHub Actions 的仓库'));
+        empty.appendChild(el('div', '', visible.length || services.length ? '没有符合条件的服务' : '没有发现配置了 GitHub Actions 的仓库'));
       }
     }
 
@@ -1466,10 +1468,10 @@
       const card = el('div', 'card');
 
       const top = el('div', 'card-top');
-      const g = GRADIENTS[hash(p.name) % GRADIENTS.length];
+      const st = tileStyle(p.name, p.platform); // platform=cf → cloud 图标
       const tile = el('div', 'tile');
-      tile.style.background = 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')';
-      tile.innerHTML = svg('cloud', 22);
+      tile.style.background = st.background;
+      tile.innerHTML = svg(st.icon, 22);
       top.appendChild(tile);
 
       const title = el('div', 'card-title');

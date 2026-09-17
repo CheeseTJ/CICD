@@ -125,10 +125,15 @@
 - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID
 - `CF_PAGES_PROJECTS`：可选，逗号分隔的项目白名单，留空表示展示账号下全部 Pages 项目
 
-## 13. 平台徽章（检测「主体在哪」，单徽章）
+## 13. 平台徽章与卡片图标（检测「主体在哪」，单徽章）
 
 每张卡片底部展示**一个**平台徽章，标明该对象的主体部署位置；不展示多平台组合，
 不展示「生产环境/私有」等与环境无关的标签。当前平台：蒲公英 / Cloudflare / OCI。
+
+卡片左上角图标与徽章一致，只表达「主体部署在哪」，全站仅三个图标：
+OCI → 芯片（cpu）、Cloudflare → 云（cloud）、蒲公英 → 手机（smartphone）；
+平台判断不出时用中性方块（box）兜底。不用 GitHub 仓库主语言映射图标——
+它按字节数统计（内嵌大 HTML 的 Go 仓库会被判成 HTML），看起来没有逻辑。
 
 | 卡片 | 判定规则 | 平台 |
 |---|---|---|
@@ -137,6 +142,9 @@
 | 部署 / 应用 | workflow 出现 `wrangler` / `api.cloudflare.com` / `cloudflare/pages` | Cloudflare |
 | 部署 / 应用 | 以上都没有，但状态文件里有同步记录（`last_synced_tag` / `identifier` / `pgyer_shortcut_url`） | 蒲公英 |
 | 部署 / 应用 | 都判断不出 | 不显示徽章 |
+
+视图归属：已在「应用」视图展示的仓库（is_app，如 music-flutter）不再出现在
+「部署」视图，避免同一仓库出现在两个分组；应用列表加载完成后会重渲染部署视图。
 
 注意：`music-flutter`、`cicd` 的 workflow 只是把 `PGYER_API_KEY` 传给构建，
 真正上传蒲公英由本控制台完成，所以检测蒲公英不看 `pgyer` 字样、只看同步状态。
