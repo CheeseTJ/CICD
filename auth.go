@@ -258,13 +258,15 @@ func (a *authenticator) verifyRequest(r *http.Request) (*tokenClaims, error) {
 }
 
 // authenticate 校验请求携带的令牌，失败返回 nil（/api/health 只需判断登录与否）
+//
+// 刻意不打日志：容器的 healthcheck 每 30 秒无令牌探一次 /api/health，
+// 若在此记录会持续刷屏、淹没真实告警。真正的拒绝日志在 wrap 里。
 func (a *authenticator) authenticate(r *http.Request) *tokenClaims {
 	if !a.cfg.enabled() {
 		return nil
 	}
 	claims, err := a.verifyRequest(r)
 	if err != nil {
-		log.Printf("令牌校验失败 %s: %v", r.URL.Path, err)
 		return nil
 	}
 	return claims
