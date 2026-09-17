@@ -25,6 +25,9 @@ type config struct {
 	PGYERKey         string
 	GitHubOwner      string        // 可选：非空时列出指定用户/组织的公开仓库
 	AutoSyncInterval time.Duration // 自动同步轮询间隔
+	CFToken          string        // 可选：Cloudflare API Token（Pages:Read），用于展示 Pages 部署记录
+	CFAccountID      string        // 可选：Cloudflare 账号 ID
+	CFProjects       []string      // 可选：只展示这些 Pages 项目，空表示全部
 }
 
 func loadConfig() *config {
@@ -35,7 +38,21 @@ func loadConfig() *config {
 		PGYERKey:         os.Getenv("PGYER_API_KEY"),
 		GitHubOwner:      os.Getenv("GITHUB_OWNER"),
 		AutoSyncInterval: getenvDuration("AUTO_SYNC_INTERVAL", 5*time.Minute),
+		CFToken:          os.Getenv("CLOUDFLARE_API_TOKEN"),
+		CFAccountID:      os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
+		CFProjects:       splitCSV(os.Getenv("CF_PAGES_PROJECTS")),
 	}
+}
+
+// splitCSV 解析逗号分隔的配置项，忽略空白项
+func splitCSV(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getenv(k, def string) string {
@@ -59,6 +76,7 @@ type server struct {
 	store *Store
 	gh    *githubClient
 	pgyer *pgyerClient
+	cf    *cloudflareClient
 
 	syncMu  sync.Mutex
 	syncing map[string]bool
@@ -119,6 +137,7 @@ func main() {
 		store:   store,
 		gh:      &githubClient{http: newHTTPClient(), token: cfg.GitHubToken},
 		pgyer:   &pgyerClient{http: newHTTPClient(), apiKey: cfg.PGYERKey},
+		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects},
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 	}
@@ -128,6 +147,7 @@ func main() {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/repos", s.handleRepos)
 	mux.HandleFunc("/api/deployments", s.handleDeployments)
+	mux.HandleFunc("/api/pages", s.handlePages)
 	mux.HandleFunc("/api/repos/mark", s.handleMark)
 	mux.HandleFunc("/api/repos/autosync", s.handleAutoSync)
 	mux.HandleFunc("/api/repos/sync", s.handleSync)
@@ -136,7 +156,7 @@ func main() {
 	s.startAutoSync()
 
 	addr := ":" + cfg.Port
-	log.Printf("pgyer-sync 启动: http://localhost%s (自动同步间隔 %s)", addr, cfg.AutoSyncInterval)
+	log.Printf("cicd 启动: http://localhost%s (自动同步间隔 %s)", addr, cfg.AutoSyncInterval)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
@@ -149,12 +169,64 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                 true,
-		"github_token":       s.cfg.GitHubToken != "",
-		"pgyer_key":          s.cfg.PGYERKey != "",
-		"github_owner":       s.cfg.GitHubOwner,
-		"auto_sync_interval": s.cfg.AutoSyncInterval.String(),
-		"data_file":          s.cfg.DataFile,
+		"ok":                    true,
+		"github_token":          s.cfg.GitHubToken != "",
+		"pgyer_key":             s.cfg.PGYERKey != "",
+		"github_owner":          s.cfg.GitHubOwner,
+		"auto_sync_interval":    s.cfg.AutoSyncInterval.String(),
+		"data_file":             s.cfg.DataFile,
+		"cloudflare_token":      s.cfg.CFToken != "",
+		"cloudflare_account_id": s.cfg.CFAccountID != "",
+		"cf_pages_projects":     strings.Join(s.cfg.CFProjects, ","),
+	})
+}
+
+// handlePages 展示 Cloudflare Pages 站点与最近部署记录（只读，数据实时取自 CF API）。
+// 未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 时返回 configured=false，前端据此给出提示。
+func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
+	if !s.cf.ready() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"configured": false,
+			"projects":   []pagesProjectView{},
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	projects, err := s.cf.listProjects(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+
+	const perProject = 6
+	views := make([]pagesProjectView, len(projects))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, p := range projects {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, p cfProject) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			c, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			deps, err := s.cf.listDeployments(c, p.Name, perProject)
+			if err != nil {
+				// 单个站点的部署记录失败不影响其它站点，退回项目自带的 latest_deployment
+				log.Printf("读取 Pages 部署记录失败 %s: %v", p.Name, err)
+			}
+			views[i] = buildPagesProjectView(p, deps, s.cf.accountID)
+		}(i, p)
+	}
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"configured": true,
+		"account_id": s.cf.accountID,
+		"projects":   views,
 	})
 }
 
@@ -589,7 +661,7 @@ func (s *server) syncRepo(ctx context.Context, fullName string, prog func(stage 
 	}
 	asset := apks[0]
 
-	tmp, err := os.CreateTemp("", "pgyer-sync-*.apk")
+	tmp, err := os.CreateTemp("", "cicd-*.apk")
 	if err != nil {
 		return nil, err
 	}

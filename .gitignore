@@ -5,4 +5,4 @@ data.json
 
 # 本地编译产物
 cicd-console
-pgyer-sync
+/cicd

@@ -23,6 +23,11 @@ jobs:
           PORT=8090
           AUTO_SYNC_INTERVAL=5m
           GITHUB_OWNER=
+          # Cloudflare Pages 部署记录（只读展示）
+          CLOUDFLARE_API_TOKEN=${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID=${{ secrets.CF_ACCOUNT_ID }}
+          # 只展示这些 Pages 项目（逗号分隔，留空=全部）
+          CF_PAGES_PROJECTS=
           EOF
           chmod 600 .env
 

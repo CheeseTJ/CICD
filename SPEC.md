@@ -102,6 +102,25 @@
 
 ## 11. 明确不做
 
-- 不新增「概览 / 构建 / 部署」等无实现支撑的导航与视图
+- 不新增无实现支撑的导航与视图（「前端站点」有 Cloudflare Pages API 数据支撑，见第 12 节）
 - 不做「成功率」等无数据来源的指标
 - 不做列表/网格视图切换、通知铃铛、头像等无功能装饰
+
+## 12. 前端站点（Cloudflare Pages，只读）
+
+数据来源：Cloudflare Pages API
+（`GET /accounts/{account_id}/pages/projects` 与 `GET /accounts/{account_id}/pages/projects/{name}/deployments?per_page=6`），
+后端聚合为 `GET /api/pages`，「前端站点」视图展示每个站点的最近部署：
+
+- 状态徽标：成功 / 失败 / 构建中 / 排队中 / 已跳过（CF 的 `latest_stage.status` 归一化为 GitHub 运行态后复用「部署」视图的配色）
+- meta 行：环境（生产 / 预览）· 分支 · commit 短 hash · 最后阶段名
+- commit 首行信息、相对时间与耗时（`created_on` → `modified_on`）
+- 最近 6 次部署的状态点；⋮ 菜单可打开站点 / Cloudflare 控制台 / 该次部署
+- 统计卡：站点 / 最近成功 / 最近失败 / 构建中；支持按名称与域名搜索、按状态筛选
+
+约束与环境变量：
+
+- **只读**：不触发构建、不改动 Pages 配置，CF 侧的 push 自动构建保持原样
+- `CLOUDFLARE_API_TOKEN`：Cloudflare API Token，权限 `Pages:Read` 即可；未配置时 `/api/pages` 返回 `configured=false`，视图给出提示而不是报错
+- `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID
+- `CF_PAGES_PROJECTS`：可选，逗号分隔的项目白名单，留空表示展示账号下全部 Pages 项目

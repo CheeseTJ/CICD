@@ -484,6 +484,11 @@
           <span class="nav-label">部署</span>
           <span class="nav-badge" id="navDeployBadge">0</span>
         </button>
+        <button class="nav-item" data-view="frontends">
+          <span class="nav-icon" data-icon="cloud"></span>
+          <span class="nav-label">前端站点</span>
+          <span class="nav-badge" id="navPagesBadge">0</span>
+        </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon" data-icon="gear"></span>
           <span class="nav-label">设置</span>
@@ -560,6 +565,30 @@
 
           <div class="grid" id="deployGrid"></div>
           <div class="empty" id="deployEmpty" style="display:none"></div>
+        </section>
+
+        <section class="view" id="view-frontends">
+          <div class="page-head">
+            <div>
+              <h1>前端站点</h1>
+              <p>Cloudflare Pages 站点与最近部署记录（只读，实时取自 CF API）</p>
+            </div>
+          </div>
+
+          <div class="stats" id="pagesStats"></div>
+
+          <div class="section-head">
+            <div>
+              <h2>站点列表</h2>
+              <p class="sub" id="pagesCount"></p>
+            </div>
+            <div class="section-tools">
+              <div class="pills" id="pagesPills"></div>
+            </div>
+          </div>
+
+          <div class="grid" id="pagesGrid"></div>
+          <div class="empty" id="pagesEmpty" style="display:none"></div>
         </section>
 
         <section class="view" id="view-settings">
@@ -649,6 +678,10 @@
     let deployFilter = 'all';
     let deploySortBy = 'recent';
     let deployLoaded = false;
+    let pages = [];
+    let pagesConfigured = false;
+    let pagesFilter = 'all';
+    let pagesLoaded = false;
 
     /* ---------- 基础工具 ---------- */
     function svg(name, size) {
@@ -1332,6 +1365,223 @@
       }
     }
 
+    /* ---------- 渲染：前端站点（Cloudflare Pages） ---------- */
+    function pagesStatusOf(p) {
+      const l = p.latest;
+      if (!l) return { cls: 'off', text: '暂无部署', icon: 'clock' };
+      return runStatus(l.status);
+    }
+
+    function pagesStatusKey(p) {
+      const l = p.latest;
+      if (!l) return 'off';
+      return runStatus(l.status).cls;
+    }
+
+    function renderPagesStats(list) {
+      const items = [
+        { label: '站点', value: list.length, icon: 'cloud' },
+        { label: '最近成功', value: list.filter(p => pagesStatusKey(p) === 'ok').length, icon: 'check' },
+        { label: '最近失败', value: list.filter(p => pagesStatusKey(p) === 'bad').length, icon: 'close' },
+        { label: '构建中', value: list.filter(p => pagesStatusKey(p) === 'run').length, icon: 'refresh' }
+      ];
+      const box = document.getElementById('pagesStats');
+      box.innerHTML = '';
+      items.forEach(it => {
+        const card = el('div', 'stat');
+        const icon = el('div', 'stat-icon');
+        icon.innerHTML = svg(it.icon, 22);
+        card.appendChild(icon);
+        const body = el('div', 'stat-body');
+        body.appendChild(el('div', 'stat-label', it.label));
+        body.appendChild(el('div', 'stat-value', String(it.value)));
+        card.appendChild(body);
+        const arrow = el('div', 'stat-arrow');
+        arrow.innerHTML = svg('chevronRight', 18);
+        card.appendChild(arrow);
+        box.appendChild(card);
+      });
+    }
+
+    function renderPagesPills() {
+      const defs = [['all', '全部'], ['ok', '成功'], ['bad', '失败'], ['run', '构建中']];
+      const box = document.getElementById('pagesPills');
+      box.innerHTML = '';
+      defs.forEach(([key, label]) => {
+        const b = el('button', 'pill' + (pagesFilter === key ? ' active' : ''), label);
+        b.onclick = () => { pagesFilter = key; renderPagesPills(); renderPages(); };
+        box.appendChild(b);
+      });
+    }
+
+    function renderPagesCard(p) {
+      const card = el('div', 'card');
+
+      const top = el('div', 'card-top');
+      const g = GRADIENTS[hash(p.name) % GRADIENTS.length];
+      const tile = el('div', 'tile');
+      tile.style.background = 'linear-gradient(135deg,' + g[0] + ',' + g[1] + ')';
+      tile.innerHTML = svg('cloud', 22);
+      top.appendChild(tile);
+
+      const title = el('div', 'card-title');
+      const name = el('div', 'card-name');
+      const a = el('a', '', p.name);
+      a.href = p.site_url; a.target = '_blank'; a.rel = 'noopener';
+      name.appendChild(a);
+      title.appendChild(name);
+      title.appendChild(el('div', 'card-desc',
+        (p.custom_domains && p.custom_domains.length ? p.custom_domains.join(' · ') : p.subdomain) || ''));
+      top.appendChild(title);
+
+      const moreBtn = el('button', 'icon-btn');
+      moreBtn.innerHTML = svg('dots', 18);
+      moreBtn.title = '更多操作';
+      moreBtn.onclick = e => {
+        e.stopPropagation();
+        const items = [
+          { icon: 'external', label: '打开站点', onClick: () => window.open(p.site_url, '_blank', 'noopener') },
+          { icon: 'cloud', label: '在 Cloudflare 打开', onClick: () => window.open(p.dashboard_url, '_blank', 'noopener') }
+        ];
+        if (p.latest && p.latest.url) {
+          items.push({ icon: 'globe', label: '打开该次部署', onClick: () => window.open(p.latest.url, '_blank', 'noopener') });
+        }
+        openMenu(moreBtn, items);
+      };
+      top.appendChild(moreBtn);
+      card.appendChild(top);
+
+      const l = p.latest;
+      const ps = pagesStatusOf(p);
+      const status = el('span', 'status ' + ps.cls);
+      status.appendChild(el('span', 'dot'));
+      status.appendChild(document.createTextNode(ps.text));
+      card.appendChild(status);
+
+      if (!l) {
+        const wf = el('div', 'wf-names', '生产分支 ' + (p.production_branch || '-'));
+        card.appendChild(wf);
+      } else {
+        const meta = el('div', 'run-meta');
+        meta.appendChild(el('span', '', l.environment === 'preview' ? '预览' : '生产'));
+        if (l.branch) {
+          meta.appendChild(el('span', 'sep', '·'));
+          meta.appendChild(el('span', '', l.branch));
+        }
+        if (l.commit_short) {
+          meta.appendChild(el('span', 'sep', '·'));
+          meta.appendChild(el('span', '', l.commit_short));
+        }
+        if (l.stage) {
+          meta.appendChild(el('span', 'sep', '·'));
+          meta.appendChild(el('span', '', l.stage));
+        }
+        card.appendChild(meta);
+
+        if (l.commit_message) {
+          const first = l.commit_message.split('\n')[0];
+          const commit = el('div', 'commit', first);
+          commit.title = l.commit_message;
+          card.appendChild(commit);
+        }
+
+        const time = el('div', 'time');
+        time.innerHTML = svg('clock', 14);
+        const bits = [relTime(isoUnix(l.created_on))];
+        if (l.duration_sec) bits.push(formatDur(l.duration_sec));
+        time.appendChild(document.createTextNode(bits.filter(Boolean).join(' · ')));
+        time.title = localTime(isoUnix(l.created_on));
+        card.appendChild(time);
+
+        if (p.recent && p.recent.length > 1) {
+          const hist = el('div', 'history');
+          p.recent.slice(1).forEach(d => {
+            const rs = runStatus(d.status);
+            const dot = el('span', 'hist-dot ' + rs.cls);
+            dot.title = (d.commit_short || d.short_id) + ' · ' + rs.text + ' · ' + localTime(isoUnix(d.created_on));
+            hist.appendChild(dot);
+          });
+          card.appendChild(hist);
+        }
+      }
+
+      const foot = el('div', 'card-foot');
+      const envBadge = el('span', 'badge private', l && l.environment === 'preview' ? '预览环境' : '生产环境');
+      foot.appendChild(envBadge);
+      const wf = el('div', 'wf-names', '生产分支 ' + (p.production_branch || '-'));
+      wf.title = '自定义域名：' + ((p.custom_domains && p.custom_domains.length) ? p.custom_domains.join(' · ') : '无');
+      foot.appendChild(wf);
+
+      const right = el('div', 'foot-right');
+      const btn = el('button', 'btn');
+      btn.innerHTML = svg('external', 16);
+      btn.appendChild(el('span', '', '打开站点'));
+      btn.title = '打开 ' + p.site_url;
+      btn.onclick = () => window.open(p.site_url, '_blank', 'noopener');
+      right.appendChild(btn);
+      foot.appendChild(right);
+      card.appendChild(foot);
+
+      return card;
+    }
+
+    function renderPages() {
+      document.getElementById('navPagesBadge').textContent = String(pages.length);
+      renderPagesStats(pages);
+
+      let list = pages.slice();
+      if (keyword) {
+        const k = keyword.toLowerCase();
+        list = list.filter(p =>
+          p.name.toLowerCase().includes(k) ||
+          (p.subdomain || '').toLowerCase().includes(k) ||
+          (p.custom_domains || []).join(' ').toLowerCase().includes(k)
+        );
+      }
+      if (pagesFilter !== 'all') list = list.filter(p => pagesStatusKey(p) === pagesFilter);
+      list.sort((a, b) => isoUnix((b.latest || {}).created_on) - isoUnix((a.latest || {}).created_on));
+
+      document.getElementById('pagesCount').textContent =
+        '共 ' + pages.length + ' 个站点' + (pagesConfigured ? '' : '（未配置 Cloudflare 凭据）');
+
+      const grid = document.getElementById('pagesGrid');
+      grid.innerHTML = '';
+      list.forEach(p => grid.appendChild(renderPagesCard(p)));
+
+      const empty = document.getElementById('pagesEmpty');
+      if (list.length) {
+        empty.style.display = 'none';
+      } else {
+        empty.style.display = 'block';
+        empty.innerHTML = '';
+        const icon = el('div', 'empty-icon');
+        icon.innerHTML = svg('cloud', 48);
+        empty.appendChild(icon);
+        if (!pagesConfigured) {
+          empty.appendChild(el('div', '', '未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID，无法读取 Pages 部署记录'));
+        } else if (pages.length) {
+          empty.appendChild(el('div', '', '没有符合条件的站点'));
+        } else {
+          empty.appendChild(el('div', '', '该账号下没有 Cloudflare Pages 站点'));
+        }
+      }
+    }
+
+    async function loadPages(force) {
+      if (pagesLoaded && !force) return;
+      try {
+        const data = await api('/api/pages');
+        pagesConfigured = !!data.configured;
+        pages = data.projects || [];
+        pagesLoaded = true;
+        renderPages();
+      } catch (e) {
+        const banner = document.getElementById('banner');
+        banner.textContent = '加载前端站点失败：' + e.message;
+        banner.classList.add('show');
+      }
+    }
+
     function renderSettings() {
       const panel = document.getElementById('settingsPanel');
       panel.innerHTML = '';
@@ -1346,7 +1596,10 @@
         ['PGYER_API_KEY', tag(!!health.pgyer_key)],
         ['GITHUB_OWNER', el('span', 'row-value', health.github_owner || '当前登录用户（含私有仓库）')],
         ['自动同步间隔', el('span', 'row-value', health.auto_sync_interval || '-')],
-        ['数据文件', el('span', 'row-value', health.data_file || '-')]
+        ['数据文件', el('span', 'row-value', health.data_file || '-')],
+        ['CLOUDFLARE_API_TOKEN', tag(!!health.cloudflare_token)],
+        ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)],
+        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')]
       ];
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');
@@ -1406,6 +1659,7 @@
     document.getElementById('searchInput').addEventListener('input', e => {
       keyword = e.target.value.trim();
       if (activeView === 'deployments') renderDeployments();
+      else if (activeView === 'frontends') renderPages();
       else render();
     });
     setupSortButton('sortBtn',
@@ -1418,6 +1672,7 @@
       v => { deploySortBy = v; renderDeployments(); });
     document.getElementById('refreshBtn').onclick = () => {
       if (activeView === 'deployments') return loadDeployments(true);
+      if (activeView === 'frontends') return loadPages(true);
       return loadRepos();
     };
     document.getElementById('addBtn').onclick = () => {
@@ -1452,6 +1707,7 @@
         document.getElementById('sortBtn').style.display = activeView === 'apps' ? '' : 'none';
         document.getElementById('addBtn').style.display = activeView === 'settings' ? 'none' : '';
         if (activeView === 'deployments') loadDeployments();
+        if (activeView === 'frontends') loadPages();
         if (activeView === 'apps') loadDeployments(); // 让「部署」徽标也能及时更新
       };
     });
@@ -1459,9 +1715,11 @@
     mountIcons();
     renderPills();
     renderDeployPills();
+    renderPagesPills();
     loadHealth();
     loadRepos();
     loadDeployments();
+    loadPages();
   </script>
 </body>
 </html>
