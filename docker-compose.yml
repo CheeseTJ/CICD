@@ -1,3 +1,7 @@
+# 固定 compose 项目名：仓库/工作区改名（如 pgyer-sync → cicd）时
+# 隐式项目名会跟着变，导致容器名/卷名冲突，固定后不受影响
+name: cicd
+
 services:
   cicd-console:
     build: .
