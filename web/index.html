@@ -486,6 +486,23 @@
       .topbar { padding: 14px 16px; }
       .stats { grid-template-columns: 1fr; }
     }
+    /* ---------- 启动幕布：鉴权判定期间盖住控制台，避免「先见页面再弹登录」 ---------- */
+    .boot-veil {
+      position: fixed; inset: 0; z-index: 300;
+      background: var(--bg);
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity .28s ease;
+    }
+    .boot-veil.off { opacity: 0; pointer-events: none; }
+    .veil-logo {
+      font-size: 34px; color: var(--accent);
+      text-shadow: 0 0 24px rgba(59, 130, 246, 0.5);
+      animation: veilPulse 1.4s ease-in-out infinite;
+    }
+    @keyframes veilPulse {
+      0%, 100% { opacity: .45; transform: scale(.94); }
+      50% { opacity: 1; transform: scale(1); }
+    }
     /* ---------- 登录门禁 ---------- */
     .login-mask {
       position: fixed; inset: 0; z-index: 200;
@@ -681,6 +698,9 @@
     </div>
   </div>
 
+  <!-- 启动幕布：先盖住控制台，等鉴权判定后再揭幕（见 boot()） -->
+  <div class="boot-veil" id="bootVeil"><div class="veil-logo">&#8734;</div></div>
+
   <!-- 登录门禁：配置 USER_CENTER_URL 后，未登录时覆盖整页（账号由用户中心提供） -->
   <div class="login-mask" id="loginMask">
     <form class="login-box" id="loginForm">
@@ -847,7 +867,14 @@
       authClear();
     }
 
+    // 揭幕：幂等，首次调用后节点即从 DOM 移除
+    function hideVeil() {
+      const v = document.getElementById('bootVeil');
+      if (v) { v.classList.add('off'); setTimeout(() => v.remove(), 320); }
+    }
+
     function showLogin(message) {
+      hideVeil();
       document.getElementById('loginError').textContent = message || '';
       document.getElementById('loginHint').textContent = authConfig.url
         ? '账号由 ' + authConfig.url.replace(/^https?:\/\//, '') + ' 提供'
@@ -2040,13 +2067,18 @@
       renderPills();
       renderDeployPills();
       renderPagesPills();
-      // 必须先拿到 /api/health 才知道是否启用鉴权，进而决定是拦住还是直接进入
+      // 幕布全程盖住页面：先拿到 /api/health 判定鉴权，揭幕时用户看到的
+      // 直接是登录页或就绪的控制台，而不是先闪一下半成品页面
       await loadHealth();
-      if (authConfig.required && !authGet('access')) {
-        showLogin('');
-        return;
-      }
-      startApp();
+      if (!authConfig.required) { hideVeil(); startApp(); return; }
+      if (!authGet('access')) { showLogin(''); return; }
+      // 已有令牌：先在幕后完成首屏加载（会话失效会在 api() 里 401→弹登录并揭幕）
+      await Promise.race([
+        Promise.allSettled([loadRepos(), loadDeployments(), loadPages()]),
+        sleep(3500)  // 兜底：数据再慢也不能把用户晾在幕布后
+      ]);
+      if (!authGet('access')) return;  // 会话失效：登录框已弹出并揭幕
+      hideVeil();
     })();
   </script>
 </body>
