@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>CI/CD 管理平台</title>
   <style>
     :root {
@@ -472,7 +472,7 @@
     .row:last-child { border-bottom: none; }
     .row-label { font-size: 13.5px; color: var(--muted); }
     .row-value { font-size: 13.5px; font-weight: 500; text-align: right; word-break: break-all; }
-    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+    .tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; flex-shrink: 0; white-space: nowrap; }
     .tag.ok { background: var(--green-soft); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.28); }
     .tag.bad { background: var(--red-soft); color: #ff8f8f; border: 1px solid rgba(239, 68, 68, 0.28); }
     .tag .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -480,12 +480,85 @@
     @media (max-width: 1180px) {
       .stats { grid-template-columns: repeat(2, 1fr); }
     }
+    /* 移动端专属节点（桌面隐藏）：底部 Tab 栏 / FAB；设置页隐藏搜索框；设置行描述 */
+    .tabbar, .fab { display: none; }
+    .search.hidden { display: none; }
+    .row-main { min-width: 0; }
+    .row-desc { font-size: 11.5px; color: var(--muted-dim); margin-top: 3px; line-height: 1.45; }
     @media (max-width: 900px) {
       .sidebar { display: none; }
-      .content { padding: 20px 16px 50px; }
+      .content { padding: 20px 16px calc(78px + env(safe-area-inset-bottom)); }
       .topbar { padding: 14px 16px; }
-      .stats { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .page-head h1 { font-size: 20px; }
+
+      /* ---------- 底部 Tab 栏 ---------- */
+      .tabbar {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 100;
+        display: flex;
+        height: calc(62px + env(safe-area-inset-bottom));
+        padding-bottom: env(safe-area-inset-bottom);
+        background: rgba(10, 15, 30, 0.92);
+        backdrop-filter: blur(12px);
+        border-top: 1px solid var(--border-soft);
+      }
+      .tab {
+        flex: 1; border: none; background: none; cursor: pointer;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+        padding: 8px 0 6px;
+        color: var(--muted-dim); font-size: 11px; position: relative;
+      }
+      .tab svg { width: 21px; height: 21px; }
+      .tab.active { color: #7eb0ff; }
+      .tab-badge {
+        font-size: 10px; line-height: 1; color: var(--muted);
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 7px; padding: 2px 5px; margin-left: 2px;
+      }
+      .tab.active .tab-badge { color: #bcd4ff; background: rgba(59, 130, 246, 0.25); }
+
+      /* ---------- 悬浮按钮 ---------- */
+      .fab {
+        position: fixed; right: 18px; bottom: calc(78px + env(safe-area-inset-bottom)); z-index: 90;
+        width: 52px; height: 52px; border-radius: 16px; border: none; cursor: pointer;
+        background: var(--accent-strong); color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 8px 24px rgba(37, 99, 235, 0.45);
+        transition: transform .15s;
+      }
+      .fab:active { transform: scale(.9); }
+      .fab.hidden { display: none; }
     }
+
+    /* ---------- 折叠卡片（仅移动端启用，见 addCollapse） ---------- */
+    .card-summary {
+      display: none; align-items: center; gap: 10px;
+      margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--border-soft);
+      font-size: 12.5px; color: var(--muted); min-width: 0;
+    }
+    .card.collapsed .card-summary { display: flex; }
+    .sum-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+    .sum-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .sum-status.ok { color: var(--green); }
+    .sum-status.bad { color: #ff8f8f; }
+    .sum-status.off { color: var(--muted-dim); }
+    .sum-status.run { color: #7eb0ff; }
+    .sum-status.warn { color: var(--orange); }
+    .card-summary .sum-txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-chev {
+      width: 30px; height: 30px; border-radius: 9px; border: none; flex-shrink: 0;
+      background: var(--panel-hover); color: var(--muted); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s, color .15s;
+    }
+    .card-chev:active { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+    .card:not(.collapsed) .card-chev { color: var(--accent); background: var(--accent-soft); }
+    .card-chev svg { transition: transform .2s; }
+    .card:not(.collapsed) .card-chev svg { transform: rotate(180deg); }
+    @media (max-width: 900px) {
+      .card.collapsed > :not(.card-top):not(.card-summary) { display: none !important; }
+    }
+
     /* ---------- 启动幕布：鉴权判定期间盖住控制台，避免「先见页面再弹登录」 ---------- */
     .boot-veil {
       position: fixed; inset: 0; z-index: 300;
@@ -687,6 +760,25 @@
       <div class="modal-list" id="modalList"></div>
     </div>
   </div>
+
+  <!-- 移动端底部 Tab 栏：≤900px 时替代隐藏的侧栏（与 nav-item 共用 switchView） -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-view="apps">
+      <span data-icon="box" data-size="21"></span><span>应用</span><span class="tab-badge" id="tabBadge">0</span>
+    </button>
+    <button class="tab" data-view="deployments">
+      <span data-icon="rocket" data-size="21"></span><span>部署</span><span class="tab-badge" id="tabDeployBadge">0</span>
+    </button>
+    <button class="tab" data-view="frontends">
+      <span data-icon="cloud" data-size="21"></span><span>前端站点</span><span class="tab-badge" id="tabPagesBadge">0</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <span data-icon="gear" data-size="21"></span><span>设置</span>
+    </button>
+  </nav>
+
+  <!-- 移动端悬浮按钮：快捷添加应用（桌面端由 CSS 隐藏） -->
+  <button class="fab" id="fabBtn" title="添加应用"></button>
 
   <div class="modal-mask" id="detailMask">
     <div class="modal">
@@ -1399,13 +1491,42 @@
       foot.appendChild(right);
       card.appendChild(foot);
 
+      // 移动端折叠：收起为「图标+名称+摘要行」，状态并入摘要行
+      addCollapse(card,
+        (r.pgyer_linked && r.pgyer_version ? 'v' + r.pgyer_version : '—') + ' · ' +
+        (ts ? relTime(ts) + '同步' : '尚未同步'));
       return card;
+    }
+
+    // 移动端折叠卡片：默认收起为「图标+名称+摘要行」，点卡片或箭头展开
+    function addCollapse(card, sumText) {
+      if (!window.matchMedia('(max-width: 900px)').matches) return;
+      const statusEl = card.querySelector('.status');
+      card.classList.add('collapsed');
+      const row = el('div', 'card-summary');
+      const sCls = (statusEl && statusEl.className.match(/\b(ok|bad|off|run|warn)\b/) || [])[1] || 'off';
+      const st = el('span', 'sum-status ' + sCls);
+      st.appendChild(el('span', 'dot'));
+      st.appendChild(document.createTextNode(statusEl ? statusEl.textContent.trim() : '—'));
+      row.appendChild(st);
+      row.appendChild(el('span', 'sum-txt', sumText));
+      (statusEl || card.querySelector('.card-top')).insertAdjacentElement('afterend', row);
+      const chev = el('button', 'card-chev');
+      chev.title = '展开 / 收起';
+      chev.innerHTML = svg('chevronDown', 15);
+      chev.onclick = e => { e.stopPropagation(); card.classList.toggle('collapsed'); };
+      card.querySelector('.card-top').appendChild(chev);
+      card.addEventListener('click', e => {
+        if (e.target.closest('button, a, .switch-label')) return;
+        if (card.classList.contains('collapsed')) card.classList.remove('collapsed');
+      });
     }
 
     /* ---------- 渲染：列表 ---------- */
     function render() {
       const apps = repos.filter(r => r.is_app);
       document.getElementById('navBadge').textContent = String(apps.length);
+      document.getElementById('tabBadge').textContent = String(apps.length);
       renderStats(apps);
 
       let list = apps.slice();
@@ -1601,6 +1722,11 @@
       foot.appendChild(right);
       card.appendChild(foot);
 
+      // 移动端折叠：摘要 = 运行名 #次数 · 分支 · 时间（无记录则显示 workflow 名）
+      addCollapse(card,
+        l
+          ? [l.name + ' #' + l.run_number, l.branch, relTime(isoUnix(l.updated_at))].filter(Boolean).join(' · ')
+          : 'workflow：' + svc.workflow_names.join(' · '));
       return card;
     }
 
@@ -1610,6 +1736,7 @@
       const visible = services.filter(s => !appNames.has(s.full_name));
 
       document.getElementById('navDeployBadge').textContent = String(visible.length);
+      document.getElementById('tabDeployBadge').textContent = String(visible.length);
       renderDeployStats(visible);
 
       let list = visible.slice();
@@ -1817,11 +1944,17 @@
       foot.appendChild(right);
       card.appendChild(foot);
 
+      // 移动端折叠：摘要 = 环境 · commit · 时间
+      addCollapse(card,
+        l
+          ? [(l.environment === 'preview' ? '预览' : '生产'), l.commit_short, relTime(isoUnix(l.created_on))].filter(Boolean).join(' · ')
+          : '暂无部署');
       return card;
     }
 
     function renderPages() {
       document.getElementById('navPagesBadge').textContent = String(pages.length);
+      document.getElementById('tabPagesBadge').textContent = String(pages.length);
       renderPagesStats(pages);
 
       let list = pages.slice();
@@ -1902,9 +2035,22 @@
           ['当前账号', el('span', 'row-value', authGet('email') || health.account_email || '已登录')]
         ].concat(rows);
       }
+      // 配置项描述：说明每个 Token/参数的实际用途
+      const SETTING_DESCS = {
+        GITHUB_TOKEN: '调用 GitHub API：拉取应用 Release、部署运行状态，读取 workflow 内容做平台检测',
+        PGYER_API_KEY: '将应用 APK 同步发布到蒲公英，供手机端下载安装',
+        GITHUB_OWNER: '限定同步的仓库归属者，留空为当前登录用户（含私有仓库）',
+        自动同步间隔: '后台定时拉取 GitHub / Cloudflare 数据的频率',
+        CLOUDFLARE_API_TOKEN: '读取 Cloudflare Pages 部署记录，驱动「前端站点」视图',
+        CLOUDFLARE_ACCOUNT_ID: 'Cloudflare 账户标识，与上方 Token 配套用于定位 Pages 项目',
+        CF_PAGES_PROJECTS: '筛选「前端站点」视图展示的 Pages 项目，留空为全部展示'
+      };
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');
-        row.appendChild(el('div', 'row-label', label));
+        const main = el('div', 'row-main');
+        main.appendChild(el('div', 'row-label', label));
+        if (SETTING_DESCS[label]) main.appendChild(el('div', 'row-desc', SETTING_DESCS[label]));
+        row.appendChild(main);
         if (node.classList.contains('row-value')) row.appendChild(node);
         else { const w = el('div'); w.appendChild(node); row.appendChild(w); }
         panel.appendChild(row);
@@ -1992,10 +2138,15 @@
       if (activeView === 'frontends') return loadPages(true);
       return loadRepos();
     };
-    document.getElementById('addBtn').onclick = () => {
+    const openAddModal = () => {
       document.getElementById('modalMask').classList.add('show');
       renderModal();
     };
+    document.getElementById('addBtn').onclick = openAddModal;
+    // 移动端悬浮按钮：与「添加应用」同流程
+    const fabBtn = document.getElementById('fabBtn');
+    fabBtn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>';
+    fabBtn.onclick = openAddModal;
     document.getElementById('closeModal').onclick = () => document.getElementById('modalMask').classList.remove('show');
     document.getElementById('closeDetail').onclick = () => document.getElementById('detailMask').classList.remove('show');
     document.getElementById('modalMask').addEventListener('click', e => {
@@ -2015,18 +2166,26 @@
       }
     });
 
+    // 视图切换：桌面侧栏 nav-item 与移动端底部 tab 共用
+    function switchView(name) {
+      activeView = name;
+      document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+      document.querySelectorAll('#tabbar .tab').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      document.getElementById('view-' + name).classList.add('active');
+      document.getElementById('sortBtn').style.display = name === 'apps' ? '' : 'none';
+      document.getElementById('addBtn').style.display = name === 'settings' ? 'none' : '';
+      document.getElementById('fabBtn').classList.toggle('hidden', name !== 'apps');
+      document.querySelector('.search').classList.toggle('hidden', name === 'settings');
+      if (name === 'deployments') loadDeployments();
+      if (name === 'frontends') loadPages();
+      if (name === 'apps') loadDeployments(); // 让「部署」徽标也能及时更新
+    }
     document.querySelectorAll('.nav-item').forEach(btn => {
-      btn.onclick = () => {
-        activeView = btn.dataset.view;
-        document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b === btn));
-        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-        document.getElementById('view-' + activeView).classList.add('active');
-        document.getElementById('sortBtn').style.display = activeView === 'apps' ? '' : 'none';
-        document.getElementById('addBtn').style.display = activeView === 'settings' ? 'none' : '';
-        if (activeView === 'deployments') loadDeployments();
-        if (activeView === 'frontends') loadPages();
-        if (activeView === 'apps') loadDeployments(); // 让「部署」徽标也能及时更新
-      };
+      btn.onclick = () => switchView(btn.dataset.view);
+    });
+    document.querySelectorAll('#tabbar .tab').forEach(btn => {
+      btn.onclick = () => switchView(btn.dataset.view);
     });
 
     /* ---------- 登录表单 ---------- */
