@@ -480,6 +480,9 @@
       .content { padding: 20px 16px calc(78px + env(safe-area-inset-bottom)); }
       .topbar { padding: 14px 16px; }
       .stats { grid-template-columns: repeat(2, 1fr); }
+      /* 统计卡的两端差异：手机端只留两张，带 web-only 的卡不展示
+         （哪些卡带标记见 renderStats / renderDeployStats / renderPagesStats） */
+      .stat.web-only { display: none; }
       .page-head h1 { font-size: 20px; }
 
       /* ---------- 底部 Tab 栏 ---------- */
@@ -607,11 +610,11 @@
         </button>
         <button class="nav-item" data-view="deployments">
           <span class="nav-icon" data-icon="rocket"></span>
-          <span class="nav-label">部署</span>
+          <span class="nav-label">服务</span>
         </button>
         <button class="nav-item" data-view="frontends">
           <span class="nav-icon" data-icon="cloud"></span>
-          <span class="nav-label">前端站点</span>
+          <span class="nav-label">前端</span>
         </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon" data-icon="gear"></span>
@@ -669,7 +672,7 @@
         <section class="view" id="view-deployments">
           <div class="page-head">
             <div>
-              <h1>部署</h1>
+              <h1>服务</h1>
               <p>自动发现配置了 GitHub Actions 的仓库，展示最近一次运行状态</p>
             </div>
           </div>
@@ -747,10 +750,10 @@
       <span data-icon="box" data-size="21"></span><span>应用</span>
     </button>
     <button class="tab" data-view="deployments">
-      <span data-icon="rocket" data-size="21"></span><span>部署</span>
+      <span data-icon="rocket" data-size="21"></span><span>服务</span>
     </button>
     <button class="tab" data-view="frontends">
-      <span data-icon="cloud" data-size="21"></span><span>前端站点</span>
+      <span data-icon="cloud" data-size="21"></span><span>前端</span>
     </button>
     <button class="tab" data-view="settings">
       <span data-icon="gear" data-size="21"></span><span>设置</span>
@@ -1221,17 +1224,13 @@
     }
 
     /* ---------- 渲染：统计 ---------- */
-    function renderStats(apps) {
-      const items = [
-        { label: '应用', value: apps.length, icon: 'box' },
-        { label: '已同步', value: apps.filter(a => a.last_synced_tag).length, icon: 'check' },
-        { label: '自动同步', value: apps.filter(a => a.auto_sync).length, icon: 'refresh' },
-        { label: '蒲公英已关联', value: apps.filter(a => a.pgyer_linked).length, icon: 'cloud' }
-      ];
-      const box = document.getElementById('stats');
+    // 三页的统计卡共用一套渲染：带 webOnly 的卡只在 web 端展示，
+    // 手机端由 CSS 的 .stat.web-only 隐藏，两端差异只体现在下面的 items 里
+    function renderStatCards(boxId, items) {
+      const box = document.getElementById(boxId);
       box.innerHTML = '';
       items.forEach(it => {
-        const card = el('div', 'stat');
+        const card = el('div', 'stat' + (it.webOnly ? ' web-only' : ''));
         const icon = el('div', 'stat-icon');
         icon.innerHTML = svg(it.icon, 22);
         card.appendChild(icon);
@@ -1244,6 +1243,15 @@
         card.appendChild(arrow);
         box.appendChild(card);
       });
+    }
+
+    function renderStats(apps) {
+      renderStatCards('stats', [
+        { label: '应用', value: apps.length, icon: 'box' },
+        { label: '已同步', value: apps.filter(a => a.last_synced_tag).length, icon: 'check' },
+        { label: '自动同步', value: apps.filter(a => a.auto_sync).length, icon: 'refresh', webOnly: true },
+        { label: '蒲公英已关联', value: apps.filter(a => a.pgyer_linked).length, icon: 'cloud', webOnly: true }
+      ]);
     }
 
     function statusOf(r) {
@@ -1566,28 +1574,14 @@
     }
 
     function renderDeployStats(list) {
-      // 只留「服务总数」和「运行失败」：成功/进行中的数量已由下方筛选 pill 与
-      // 「共 N 个服务（自动发现…）」覆盖，重复展示没有额外信息
-      const items = [
+      // 手机端只留「服务 / 运行失败」两张；成功与进行中的数量已由下方筛选 pill 与
+      // 「共 N 个服务（自动发现…）」覆盖
+      renderStatCards('deployStats', [
         { label: '服务', value: list.length, icon: 'rocket' },
-        { label: '运行失败', value: list.filter(s => deployStatusKey(s) === 'bad').length, icon: 'close' }
-      ];
-      const box = document.getElementById('deployStats');
-      box.innerHTML = '';
-      items.forEach(it => {
-        const card = el('div', 'stat');
-        const icon = el('div', 'stat-icon');
-        icon.innerHTML = svg(it.icon, 22);
-        card.appendChild(icon);
-        const body = el('div', 'stat-body');
-        body.appendChild(el('div', 'stat-label', it.label));
-        body.appendChild(el('div', 'stat-value', String(it.value)));
-        card.appendChild(body);
-        const arrow = el('div', 'stat-arrow');
-        arrow.innerHTML = svg('chevronRight', 18);
-        card.appendChild(arrow);
-        box.appendChild(card);
-      });
+        { label: '运行成功', value: list.filter(s => deployStatusKey(s) === 'ok').length, icon: 'check', webOnly: true },
+        { label: '运行失败', value: list.filter(s => deployStatusKey(s) === 'bad').length, icon: 'close' },
+        { label: '进行中', value: list.filter(s => deployStatusKey(s) === 'run').length, icon: 'refresh', webOnly: true }
+      ]);
     }
 
     function renderServiceCard(svc) {
@@ -1775,28 +1769,13 @@
     }
 
     function renderPagesStats(list) {
-      const items = [
+      // 手机端只留「站点 / 最近失败」两张
+      renderStatCards('pagesStats', [
         { label: '站点', value: list.length, icon: 'cloud' },
-        { label: '最近成功', value: list.filter(p => pagesStatusKey(p) === 'ok').length, icon: 'check' },
+        { label: '最近成功', value: list.filter(p => pagesStatusKey(p) === 'ok').length, icon: 'check', webOnly: true },
         { label: '最近失败', value: list.filter(p => pagesStatusKey(p) === 'bad').length, icon: 'close' },
-        { label: '构建中', value: list.filter(p => pagesStatusKey(p) === 'run').length, icon: 'refresh' }
-      ];
-      const box = document.getElementById('pagesStats');
-      box.innerHTML = '';
-      items.forEach(it => {
-        const card = el('div', 'stat');
-        const icon = el('div', 'stat-icon');
-        icon.innerHTML = svg(it.icon, 22);
-        card.appendChild(icon);
-        const body = el('div', 'stat-body');
-        body.appendChild(el('div', 'stat-label', it.label));
-        body.appendChild(el('div', 'stat-value', String(it.value)));
-        card.appendChild(body);
-        const arrow = el('div', 'stat-arrow');
-        arrow.innerHTML = svg('chevronRight', 18);
-        card.appendChild(arrow);
-        box.appendChild(card);
-      });
+        { label: '构建中', value: list.filter(p => pagesStatusKey(p) === 'run').length, icon: 'refresh', webOnly: true }
+      ]);
     }
 
     function renderPagesPills() {
@@ -2010,7 +1989,7 @@
       const SETTING_DESCS = {
         GITHUB_TOKEN: '调用 GitHub API：拉取应用 Release、部署运行状态，读取 workflow 内容做平台检测',
         PGYER_API_KEY: '将应用 APK 同步发布到蒲公英，供手机端下载安装',
-        CLOUDFLARE_API_TOKEN: '读取 Cloudflare Pages 部署记录，驱动「前端站点」视图',
+        CLOUDFLARE_API_TOKEN: '读取 Cloudflare Pages 部署记录，驱动「前端」视图',
         CLOUDFLARE_ACCOUNT_ID: 'Cloudflare 账户标识，与上方 Token 配套用于定位 Pages 项目'
       };
       rows.forEach(([label, node]) => {
