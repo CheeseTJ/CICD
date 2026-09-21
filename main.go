@@ -170,10 +170,10 @@ func main() {
 	addr := ":" + cfg.Port
 	if cfg.Auth.enabled() {
 		if len(cfg.Auth.AllowedEmails) > 0 {
-			log.Printf("已启用用户中心登录（%s，app=%s，邮箱白名单 %d 个）",
+			log.Printf("已启用用户中心登录（%s，app=%s，仅管理员可访问，邮箱白名单 %d 个）",
 				cfg.Auth.UserCenterURL, cfg.Auth.App, len(cfg.Auth.AllowedEmails))
 		} else {
-			log.Printf("已启用用户中心登录（%s，app=%s，未设邮箱白名单：任何已注册用户均可访问）",
+			log.Printf("已启用用户中心登录（%s，app=%s，仅管理员可访问，未设邮箱白名单）",
 				cfg.Auth.UserCenterURL, cfg.Auth.App)
 		}
 	} else {

@@ -4,6 +4,8 @@
 // 本服务只需拉一次用户中心的 JWKS 公钥，之后本地验签即可，用户中心下线也不影响已登录用户。
 //
 // 只依赖标准库：Ed25519 验签用 crypto/ed25519，JWT 结构自己解析（结构很固定，无需引入库）。
+//
+// 本面板只对管理员开放：令牌除验签、校验 aud 外，还要求 role 声明为 admin。
 package main
 
 import (
@@ -48,6 +50,7 @@ type tokenClaims struct {
 	DeviceID string `json:"device_id"`
 	Scope    string `json:"scope"`
 	Email    string `json:"email"`
+	Role     string `json:"role"`
 }
 
 // jwksDoc 用户中心 /.well-known/jwks.json 的结构
@@ -213,7 +216,14 @@ func (a *authenticator) verify(ctx context.Context, token string) (*tokenClaims,
 		return nil, fmt.Errorf("令牌不适用于本服务（aud=%q）", claims.Aud)
 	}
 
-	// 邮箱白名单：未配置则放行所有已验证用户
+	// 本面板只对管理员开放。用户中心每次签发令牌都会带上实时 role，
+	// 因此这里只看声明即可；角色被降级后旧令牌仍会带 admin，
+	// 但访问令牌 15 分钟就过期，重启登录即收敛。
+	if claims.Role != "admin" {
+		return nil, fmt.Errorf("%w：%s", errNotAdmin, claims.Email)
+	}
+
+	// 邮箱白名单：在「必须是管理员」之上再收窄到具体账号；未配置则放行所有管理员
 	if len(a.cfg.AllowedEmails) > 0 {
 		ok := false
 		for _, e := range a.cfg.AllowedEmails {
@@ -232,6 +242,9 @@ func (a *authenticator) verify(ctx context.Context, token string) (*tokenClaims,
 // errNotAllowed 令牌有效但账号不在白名单内。与「令牌无效」区分开：
 // 前者重试/刷新都没有意义，应直接告知拒绝，而不是让前端白刷一次令牌。
 var errNotAllowed = errors.New("账号不在允许名单内")
+
+// errNotAdmin 令牌有效但账号不是管理员。同样不该用 401 触发前端刷新。
+var errNotAdmin = errors.New("需要管理员权限")
 
 // bearerToken 从 Authorization 头取出令牌
 func bearerToken(r *http.Request) string {
@@ -257,7 +270,7 @@ func (a *authenticator) verifyRequest(r *http.Request) (*tokenClaims, error) {
 	return a.verify(ctx, token)
 }
 
-// authenticate 校验请求携带的令牌，失败返回 nil（/api/health 只需判断登录与否）
+// authenticate 校验请求携带的令牌，失败返回 nil（/api/health 据此判断是否下发给本管理员看配置明细）
 //
 // 刻意不打日志：容器的 healthcheck 每 30 秒无令牌探一次 /api/health，
 // 若在此记录会持续刷屏、淹没真实告警。真正的拒绝日志在 wrap 里。
@@ -272,7 +285,7 @@ func (a *authenticator) authenticate(r *http.Request) *tokenClaims {
 	return claims
 }
 
-// wrap 保护需要登录的接口。未启用鉴权时原样放行。
+// wrap 保护需要管理员身份的接口。未启用鉴权时原样放行。
 func (a *authenticator) wrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !a.cfg.enabled() {
@@ -286,7 +299,7 @@ func (a *authenticator) wrap(next http.HandlerFunc) http.HandlerFunc {
 		}
 		log.Printf("拒绝访问 %s: %v", r.URL.Path, err)
 
-		if errors.Is(err, errNotAllowed) {
+		if errors.Is(err, errNotAllowed) || errors.Is(err, errNotAdmin) {
 			// 令牌本身有效，只是账号无权限：重试无意义，不用 401 触发前端刷新
 			writeErr(w, http.StatusForbidden, err)
 			return

@@ -33,8 +33,8 @@ jobs:
           USER_CENTER_URL=https://ucenter.june-t.top
           # 本服务在用户中心的标识，决定 JWT 的 aud，需与用户中心 APPS 一致
           USER_CENTER_APP=cicd
-          # 邮箱白名单（逗号分隔）。留空=任何已注册用户都能操作本面板；
-          # 建议填自己的邮箱，避免邀请码发出去后别人也能触发分发
+          # 邮箱白名单（逗号分隔），在「角色必须是 admin」之上再收窄。
+          # 留空=任何管理员都能操作本面板
           ALLOWED_EMAILS=
           EOF
           chmod 600 .env

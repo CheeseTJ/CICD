@@ -977,6 +977,12 @@
         }
       }
       const data = await res.json().catch(() => ({}));
+      // 403：令牌有效但账号不是管理员（或不在邮箱白名单内）。
+      // 刷新令牌救不回来，清掉登录态直接退回登录页说明原因，而不是留在空控制台里。
+      if (res.status === 403) {
+        requireLogin(data.error || '当前账号没有访问权限');
+        throw new Error(data.error || '没有访问权限');
+      }
       if (!res.ok) throw new Error(data.error || ('请求失败 ' + res.status));
       return data;
     }
