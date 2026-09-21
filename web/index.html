@@ -104,16 +104,6 @@
     .nav-item.active .nav-icon { color: #7eb0ff; }
     .nav-icon { color: inherit; flex-shrink: 0; }
     .nav-label { flex: 1; }
-    .nav-badge {
-      font-size: 12px;
-      color: var(--muted);
-      background: rgba(255, 255, 255, 0.06);
-      border-radius: 6px;
-      padding: 1px 7px;
-      min-width: 22px;
-      text-align: center;
-    }
-    .nav-item.active .nav-badge { color: #bcd4ff; background: rgba(59, 130, 246, 0.25); }
 
     /* ---------- 主区域 ---------- */
     .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -510,12 +500,6 @@
       }
       .tab svg { width: 21px; height: 21px; }
       .tab.active { color: #7eb0ff; }
-      .tab-badge {
-        font-size: 10px; line-height: 1; color: var(--muted);
-        background: rgba(255, 255, 255, 0.08);
-        border-radius: 7px; padding: 2px 5px; margin-left: 2px;
-      }
-      .tab.active .tab-badge { color: #bcd4ff; background: rgba(59, 130, 246, 0.25); }
 
       /* ---------- 悬浮按钮 ---------- */
       .fab {
@@ -620,17 +604,14 @@
         <button class="nav-item active" data-view="apps">
           <span class="nav-icon" data-icon="box"></span>
           <span class="nav-label">应用</span>
-          <span class="nav-badge" id="navBadge">0</span>
         </button>
         <button class="nav-item" data-view="deployments">
           <span class="nav-icon" data-icon="rocket"></span>
           <span class="nav-label">部署</span>
-          <span class="nav-badge" id="navDeployBadge">0</span>
         </button>
         <button class="nav-item" data-view="frontends">
           <span class="nav-icon" data-icon="cloud"></span>
           <span class="nav-label">前端站点</span>
-          <span class="nav-badge" id="navPagesBadge">0</span>
         </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon" data-icon="gear"></span>
@@ -763,13 +744,13 @@
   <!-- 移动端底部 Tab 栏：≤900px 时替代隐藏的侧栏（与 nav-item 共用 switchView） -->
   <nav class="tabbar" id="tabbar">
     <button class="tab active" data-view="apps">
-      <span data-icon="box" data-size="21"></span><span>应用</span><span class="tab-badge" id="tabBadge">0</span>
+      <span data-icon="box" data-size="21"></span><span>应用</span>
     </button>
     <button class="tab" data-view="deployments">
-      <span data-icon="rocket" data-size="21"></span><span>部署</span><span class="tab-badge" id="tabDeployBadge">0</span>
+      <span data-icon="rocket" data-size="21"></span><span>部署</span>
     </button>
     <button class="tab" data-view="frontends">
-      <span data-icon="cloud" data-size="21"></span><span>前端站点</span><span class="tab-badge" id="tabPagesBadge">0</span>
+      <span data-icon="cloud" data-size="21"></span><span>前端站点</span>
     </button>
     <button class="tab" data-view="settings">
       <span data-icon="gear" data-size="21"></span><span>设置</span>
@@ -1197,7 +1178,9 @@
           app: health.auth_app || 'cicd',
           url: health.user_center_url || ''
         };
-        // 未登录时后端只回鉴权字段、不下发配置明细，此时不该报「缺少环境变量」
+        // 未登录时后端只回鉴权字段、不下发配置明细，此时不该报「缺少环境变量」。
+        // 首屏也可能带着已过期的令牌来问一次，同样只回鉴权字段；令牌随后会被静默刷新，
+        // 因此这里不渲染设置页，等用户真正进入设置页时再补拉一次（见 switchView）。
         if (health.auth_required && health.github_token === undefined) {
           banner.classList.remove('show');
           return;
@@ -1520,8 +1503,6 @@
     /* ---------- 渲染：列表 ---------- */
     function render() {
       const apps = repos.filter(r => r.is_app);
-      document.getElementById('navBadge').textContent = String(apps.length);
-      document.getElementById('tabBadge').textContent = String(apps.length);
       renderStats(apps);
 
       let list = apps.slice();
@@ -1585,11 +1566,11 @@
     }
 
     function renderDeployStats(list) {
+      // 只留「服务总数」和「运行失败」：成功/进行中的数量已由下方筛选 pill 与
+      // 「共 N 个服务（自动发现…）」覆盖，重复展示没有额外信息
       const items = [
         { label: '服务', value: list.length, icon: 'rocket' },
-        { label: '运行成功', value: list.filter(s => deployStatusKey(s) === 'ok').length, icon: 'check' },
-        { label: '运行失败', value: list.filter(s => deployStatusKey(s) === 'bad').length, icon: 'close' },
-        { label: '进行中', value: list.filter(s => deployStatusKey(s) === 'run').length, icon: 'refresh' }
+        { label: '运行失败', value: list.filter(s => deployStatusKey(s) === 'bad').length, icon: 'close' }
       ];
       const box = document.getElementById('deployStats');
       box.innerHTML = '';
@@ -1730,8 +1711,6 @@
       const appNames = new Set(repos.filter(r => r.is_app).map(r => r.full_name));
       const visible = services.filter(s => !appNames.has(s.full_name));
 
-      document.getElementById('navDeployBadge').textContent = String(visible.length);
-      document.getElementById('tabDeployBadge').textContent = String(visible.length);
       renderDeployStats(visible);
 
       let list = visible.slice();
@@ -1948,8 +1927,6 @@
     }
 
     function renderPages() {
-      document.getElementById('navPagesBadge').textContent = String(pages.length);
-      document.getElementById('tabPagesBadge').textContent = String(pages.length);
       renderPagesStats(pages);
 
       let list = pages.slice();
@@ -2014,19 +1991,18 @@
         t.appendChild(document.createTextNode(ok ? '已配置' : '未配置'));
         return t;
       };
+      // 只保留「凭据配没配」这类能解释其它页面为什么为空的信息。
+      // 归属者 / 同步间隔 / 数据文件 / Pages 过滤等属于固定环境变量：留空时行值就是行描述的复述，
+      // 展示价值低，故不再单独占行（这些值仍可从 /api/health 查看）。
       let rows = [
         ['GITHUB_TOKEN', tag(!!health.github_token)],
         ['PGYER_API_KEY', tag(!!health.pgyer_key)],
-        ['GITHUB_OWNER', el('span', 'row-value', health.github_owner || '当前登录用户（含私有仓库）')],
-        ['自动同步间隔', el('span', 'row-value', health.auto_sync_interval || '-')],
-        ['数据文件', el('span', 'row-value', health.data_file || '-')],
         ['CLOUDFLARE_API_TOKEN', tag(!!health.cloudflare_token)],
-        ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)],
-        ['CF_PAGES_PROJECTS', el('span', 'row-value', health.cf_pages_projects || '全部 Pages 项目')]
+        ['CLOUDFLARE_ACCOUNT_ID', tag(!!health.cloudflare_account_id)]
       ];
       if (authConfig.required) {
+        // 「登录鉴权」不再单列：能进到这一页本身就说明是登录态，恒为「已配置」
         rows = [
-          ['登录鉴权', tag(true)],
           ['当前账号', el('span', 'row-value', authGet('email') || health.account_email || '已登录')]
         ].concat(rows);
       }
@@ -2034,11 +2010,8 @@
       const SETTING_DESCS = {
         GITHUB_TOKEN: '调用 GitHub API：拉取应用 Release、部署运行状态，读取 workflow 内容做平台检测',
         PGYER_API_KEY: '将应用 APK 同步发布到蒲公英，供手机端下载安装',
-        GITHUB_OWNER: '限定同步的仓库归属者，留空为当前登录用户（含私有仓库）',
-        自动同步间隔: '后台定时拉取 GitHub / Cloudflare 数据的频率',
         CLOUDFLARE_API_TOKEN: '读取 Cloudflare Pages 部署记录，驱动「前端站点」视图',
-        CLOUDFLARE_ACCOUNT_ID: 'Cloudflare 账户标识，与上方 Token 配套用于定位 Pages 项目',
-        CF_PAGES_PROJECTS: '筛选「前端站点」视图展示的 Pages 项目，留空为全部展示'
+        CLOUDFLARE_ACCOUNT_ID: 'Cloudflare 账户标识，与上方 Token 配套用于定位 Pages 项目'
       };
       rows.forEach(([label, node]) => {
         const row = el('div', 'row');
@@ -2174,7 +2147,9 @@
       document.querySelector('.search').classList.toggle('hidden', name === 'settings');
       if (name === 'deployments') loadDeployments();
       if (name === 'frontends') loadPages();
-      if (name === 'apps') loadDeployments(); // 让「部署」徽标也能及时更新
+      if (name === 'apps') loadDeployments(); // 应用卡片上合并展示构建信息，需要部署数据
+      // 设置页的数据来自 /api/health 的配置明细：若首屏那次因令牌过期没拿到，这里补一次
+      if (name === 'settings' && authConfig.required && health.github_token === undefined) loadHealth();
     }
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.onclick = () => switchView(btn.dataset.view);
