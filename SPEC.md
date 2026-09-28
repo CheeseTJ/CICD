@@ -151,7 +151,7 @@
 点击打开运行日志）与最近几次运行的状态点；⋮ 菜单含「查看构建日志」。
 数据与「部署」视图同源（/api/deployments），加载完成后重渲染应用卡片。
 
-注意：`music-flutter`、`cicd` 的 workflow 只是把 `PGYER_API_KEY` 传给构建，
+注意：`Music-flutter`、`CICD` 的 workflow 只是把 `PGYER_API_KEY` 传给构建，
 真正上传蒲公英由本控制台完成，所以检测蒲公英不看 `pgyer` 字样、只看同步状态。
 
 检测失败（读不到 workflow）不报错、不阻断展示，只是该卡片少一个徽章。
