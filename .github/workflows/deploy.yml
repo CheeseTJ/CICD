@@ -28,6 +28,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID=${{ secrets.CF_ACCOUNT_ID }}
           # 只展示这些 Pages 项目（逗号分隔，留空=全部）
           CF_PAGES_PROJECTS=
+          # 显式标识哪些 Worker 是前端静态站（逗号分隔，如 remind-web）；
+          # 留空=不展示 Workers 站点。Workers API 无法自动区分静态站与 API 型
+          # Worker，所以靠这里声明，不做特征猜测。
+          CF_WORKERS_SITES=remind-web
           # 用户中心登录。URL 留空则鉴权关闭、接口对外开放，故这里必须填上。
           # 注意：.env 每次部署都会按本文件重新生成，改配置要改这里，别只改服务器上的 .env。
           USER_CENTER_URL=https://ucenter.june-t.top

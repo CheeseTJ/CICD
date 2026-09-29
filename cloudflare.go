@@ -12,12 +12,13 @@ import (
 	"time"
 )
 
-// cloudflareClient 只读访问 Cloudflare Pages API，用于在控制台展示前端站点的部署记录。
+// cloudflareClient 只读访问 Cloudflare Pages / Workers API，用于在控制台展示前端站点的部署记录。
 type cloudflareClient struct {
-	http      *http.Client
-	token     string   // CLOUDFLARE_API_TOKEN（只需 Pages:Read）
-	accountID string   // CLOUDFLARE_ACCOUNT_ID
-	projects  []string // 可选白名单（CF_PAGES_PROJECTS），为空表示展示全部 Pages 项目
+	http        *http.Client
+	token       string   // CLOUDFLARE_API_TOKEN（Pages:Read + Workers Scripts:Read）
+	accountID   string   // CLOUDFLARE_ACCOUNT_ID
+	projects    []string // 可选白名单（CF_PAGES_PROJECTS），为空表示展示全部 Pages 项目
+	workerSites []string // 显式标识（CF_WORKERS_SITES）：哪些 Worker 是前端静态站，为空则不展示 Workers 站点
 }
 
 func (c *cloudflareClient) ready() bool {
@@ -306,38 +307,6 @@ type cfWorkerScript struct {
 func (c *cloudflareClient) listWorkerScripts(ctx context.Context) ([]cfWorkerScript, error) {
 	var out []cfWorkerScript
 	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts", nil, &out)
-	return out, err
-}
-
-type cfWorkerBinding struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-type cfWorkerSettings struct {
-	Bindings []cfWorkerBinding `json:"bindings"`
-	// 纯静态 Worker 的 assets 配置出现在 settings 顶层（也可能以 assets binding 出现），
-	// 用 RawMessage 接住，存在即视为静态站。
-	Assets json.RawMessage `json:"assets"`
-}
-
-// isStaticWorker 判断该 Worker 是否托管静态资产（前端站点）：
-// API 型 Worker（如 music-worker）没有 assets，不会混进前端站点页。
-func isStaticWorker(s cfWorkerSettings) bool {
-	if len(s.Assets) > 0 && string(s.Assets) != "null" {
-		return true
-	}
-	for _, b := range s.Bindings {
-		if b.Type == "assets" {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *cloudflareClient) listWorkerSettings(ctx context.Context, script string) (cfWorkerSettings, error) {
-	var out cfWorkerSettings
-	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts/"+url.PathEscape(script)+"/settings", nil, &out)
 	return out, err
 }
 

@@ -25,9 +25,10 @@ type config struct {
 	PGYERKey         string
 	GitHubOwner      string        // 可选：非空时列出指定用户/组织的公开仓库
 	AutoSyncInterval time.Duration // 自动同步轮询间隔
-	CFToken          string        // 可选：Cloudflare API Token（Pages:Read），用于展示 Pages 部署记录
+	CFToken          string        // 可选：Cloudflare API Token（Pages:Read + Workers Scripts:Read），用于展示前端站点部署记录
 	CFAccountID      string        // 可选：Cloudflare 账号 ID
 	CFProjects       []string      // 可选：只展示这些 Pages 项目，空表示全部
+	CFWorkerSites    []string      // 显式标识：哪些 Worker 是前端静态站（如 remind-web），空表示不展示 Workers 站点
 	Auth             authConfig    // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
 }
 
@@ -42,6 +43,7 @@ func loadConfig() *config {
 		CFToken:          os.Getenv("CLOUDFLARE_API_TOKEN"),
 		CFAccountID:      os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		CFProjects:       splitCSV(os.Getenv("CF_PAGES_PROJECTS")),
+		CFWorkerSites:    splitCSV(os.Getenv("CF_WORKERS_SITES")),
 		Auth: authConfig{
 			UserCenterURL: os.Getenv("USER_CENTER_URL"),
 			App:           getenv("USER_CENTER_APP", "cicd"),
@@ -146,7 +148,7 @@ func main() {
 		store:   store,
 		gh:      &githubClient{http: newHTTPClient(), token: cfg.GitHubToken},
 		pgyer:   &pgyerClient{http: newHTTPClient(), apiKey: cfg.PGYERKey},
-		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects},
+		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects, workerSites: cfg.CFWorkerSites},
 		auth:    newAuthenticator(cfg.Auth, newHTTPClient()),
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
@@ -280,13 +282,32 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// listWorkerSiteViews 拉取账号下「托管了静态资产」的 Worker，转成前端站点视图。
+// listWorkerSiteViews 拉取指定为前端静态站的 Worker（白名单 CF_WORKERS_SITES），
+// 转成与 Pages 相同的视图。
+//
+// 为什么用显式白名单而不是自动识别：Workers API 不暴露「是否托管静态资产」，
+// settings 里既没有 assets 标记、bindings 为空也无法区分纯静态站与无绑定的
+// 代理型 Worker（实测 2026-09）。与其靠特征猜测，不如由配置显式声明。
 func (s *server) listWorkerSiteViews(ctx context.Context, perProject int) ([]pagesProjectView, error) {
+	if len(s.cf.workerSites) == 0 {
+		return nil, nil
+	}
+	keep := make(map[string]bool, len(s.cf.workerSites))
+	for _, name := range s.cf.workerSites {
+		keep[name] = true
+	}
+
 	scripts, err := s.cf.listWorkerScripts(ctx)
-	if err != errNotFound && err != nil {
+	if err != nil {
 		return nil, err
 	}
-	if len(scripts) == 0 {
+	var statics []cfWorkerScript
+	for _, sc := range scripts {
+		if keep[sc.ID] {
+			statics = append(statics, sc)
+		}
+	}
+	if len(statics) == 0 {
 		return nil, nil
 	}
 
@@ -299,19 +320,6 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int) ([]pag
 	subdomain, err := s.cf.getWorkerSubdomain(ctx)
 	if err != nil {
 		subdomain = "" // workers.dev 子域缺失不致命（多数站点用自定义域）
-	}
-
-	// 先筛出静态站，再并发拉各自的版本记录
-	var statics []cfWorkerScript
-	for _, sc := range scripts {
-		settings, err := s.cf.listWorkerSettings(ctx, sc.ID)
-		if err != nil {
-			log.Printf("读取 Worker settings 失败 %s: %v", sc.ID, err)
-			continue
-		}
-		if isStaticWorker(settings) {
-			statics = append(statics, sc)
-		}
 	}
 
 	views := make([]pagesProjectView, len(statics))
