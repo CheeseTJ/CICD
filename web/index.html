@@ -1283,8 +1283,10 @@
 
       const title = el('div', 'card-title');
       const name = el('div', 'card-name');
-      const a = el('a', '', r.full_name);
+      // 与其它视图一致：标题只放仓库名，悬浮显示完整名
+      const a = el('a', '', r.name || r.full_name);
       a.href = r.html_url; a.target = '_blank'; a.rel = 'noopener';
+      a.title = r.full_name;
       name.appendChild(a);
       title.appendChild(name);
       // 没有描述也占位，保证同排卡片内部元素对齐
@@ -1606,8 +1608,10 @@
 
       const title = el('div', 'card-title');
       const name = el('div', 'card-name');
-      const a = el('a', '', svc.full_name);
+      // 卡片标题只放仓库名，不带 owner 前缀（悬浮显示完整名）
+      const a = el('a', '', svc.name || svc.full_name);
       a.href = svc.html_url; a.target = '_blank'; a.rel = 'noopener';
+      a.title = svc.full_name;
       name.appendChild(a);
       title.appendChild(name);
       title.appendChild(el('div', 'card-desc', svc.description || svc.workflow_names.join(' · ')));
@@ -1711,9 +1715,13 @@
     }
 
     function renderDeployments() {
-      // 应用仓库（如 music-flutter）已在「应用」视图展示，这里排除避免重复
+      // 应用仓库（如 Music-flutter）已在「应用」视图展示，这里排除避免重复
       const appNames = new Set(repos.filter(r => r.is_app).map(r => r.full_name));
-      const visible = services.filter(s => !appNames.has(s.full_name));
+      // 前端站点（如 Remind-web）已在「前端」视图展示其站点与部署记录，同样排除；
+      // 站点数据未加载时按未排除处理，加载完成会重渲染（见 loadPages）
+      const siteNames = new Set(pages.map(p => (p.display_name || p.name).toLowerCase()));
+      const visible = services.filter(s =>
+        !appNames.has(s.full_name) && !siteNames.has((s.name || '').toLowerCase()));
 
       renderDeployStats(visible);
 
@@ -1811,8 +1819,10 @@
 
       const title = el('div', 'card-title');
       const name = el('div', 'card-name');
-      const a = el('a', '', p.name);
+      // 展示用 GitHub 仓库真实名（大小写正确，如 Remind-web）；CF 侧名称一律小写
+      const a = el('a', '', p.display_name || p.name);
       a.href = p.site_url; a.target = '_blank'; a.rel = 'noopener';
+      if (p.display_name && p.display_name !== p.name) a.title = 'Cloudflare 项目：' + p.name;
       name.appendChild(a);
       title.appendChild(name);
       title.appendChild(el('div', 'card-desc',
@@ -1922,6 +1932,7 @@
       if (keyword) {
         const k = keyword.toLowerCase();
         list = list.filter(p =>
+          (p.display_name || '').toLowerCase().includes(k) ||
           p.name.toLowerCase().includes(k) ||
           (p.subdomain || '').toLowerCase().includes(k) ||
           (p.custom_domains || []).join(' ').toLowerCase().includes(k)
@@ -1964,6 +1975,8 @@
         pages = data.projects || [];
         pagesLoaded = true;
         renderPages();
+        // 前端站点数据影响部署视图的排除逻辑（站点对应的仓库不再重复展示），已加载过则重渲染
+        if (deployLoaded) renderDeployments();
       } catch (e) {
         const banner = document.getElementById('banner');
         banner.textContent = '加载前端站点失败：' + e.message;

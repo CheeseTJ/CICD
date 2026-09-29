@@ -223,6 +223,55 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// repoDisplayNames 构建「CF 项目名（小写）→ GitHub 仓库真实名」索引。
+//
+// Cloudflare 的 Pages/Workers 名称一律小写（remind-web），与 GitHub 仓库的
+// 大小写（Remind-web）不一致，且 Pages 的 source.repo_name 是关联时的快照
+// （仓库改名后不更新，如 jmreader 仍指向 JMReader-Frontend）。所以展示名以
+// GitHub 当前仓库名为准；读取失败时返回空表，调用方退回 CF 原名展示。
+func (s *server) repoDisplayNames(ctx context.Context) map[string]string {
+	repos, err := s.gh.listRepos(ctx, s.cfg.GitHubOwner)
+	if err != nil {
+		log.Printf("[pages] 读取 GitHub 仓库名失败（改用 CF 项目名展示）: %v", err)
+		return nil
+	}
+	idx := make(map[string]string, len(repos)*2)
+	for _, r := range repos {
+		idx[strings.ToLower(r.Name)] = r.Name
+		// 去掉前端常见的 -web 后缀再注册一份：让 jmreader 这类
+		// 「CF 项目名 = 仓库名去掉后缀」的情况也能对上 JMReader-web
+		if base := stripSiteSuffix(r.Name); base != r.Name {
+			idx[strings.ToLower(base)] = r.Name
+		}
+	}
+	return idx
+}
+
+// stripSiteSuffix 去掉前端仓库常见的站点后缀（-web/_web/.web），用于名称对齐。
+func stripSiteSuffix(name string) string {
+	for _, suf := range []string{"-web", "_web", ".web"} {
+		if len(name) > len(suf) && strings.EqualFold(name[len(name)-len(suf):], suf) {
+			return name[:len(name)-len(suf)]
+		}
+	}
+	return name
+}
+
+// lookupRepoDisplayName 查仓库真实名：先精确匹配，再试去掉站点后缀后匹配；
+// 都查不到就用 CF 项目名（至少不会显示空白）。
+func lookupRepoDisplayName(idx map[string]string, projectName string) string {
+	if len(idx) == 0 {
+		return projectName
+	}
+	if n, ok := idx[strings.ToLower(projectName)]; ok {
+		return n
+	}
+	if n, ok := idx[strings.ToLower(stripSiteSuffix(projectName))]; ok {
+		return n
+	}
+	return projectName
+}
+
 // handlePages 展示 Cloudflare Pages 站点与最近部署记录（只读，数据实时取自 CF API）。
 // 未配置 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 时返回 configured=false，前端据此给出提示。
 func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +292,9 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 仓库名索引（用于把 CF 小写项目名换成 GitHub 仓库真实大小写）
+	repoNames := s.repoDisplayNames(ctx)
+
 	const perProject = 6
 	views := make([]pagesProjectView, len(projects))
 	sem := make(chan struct{}, 4)
@@ -260,7 +312,7 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 				// 单个站点的部署记录失败不影响其它站点，退回项目自带的 latest_deployment
 				log.Printf("读取 Pages 部署记录失败 %s: %v", p.Name, err)
 			}
-			views[i] = buildPagesProjectView(p, deps, s.cf.accountID)
+			views[i] = buildPagesProjectView(p, deps, s.cf.accountID, repoNames)
 		}(i, p)
 	}
 	wg.Wait()
@@ -269,7 +321,7 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 
 	// Workers 静态托管（如 remind-web）：不在 Pages API 里，单独拉取后合并进同一列表。
 	// 部分失败（权限不足/单个 Worker 读取失败）只降级不阻断，Pages 数据照常返回。
-	workerViews, err := s.listWorkerSiteViews(ctx, perProject)
+	workerViews, err := s.listWorkerSiteViews(ctx, perProject, repoNames)
 	if err != nil {
 		log.Printf("读取 Workers 静态站点失败（Token 需要 Workers Scripts:Read）: %v", err)
 	}
@@ -288,7 +340,7 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 // 为什么用显式白名单而不是自动识别：Workers API 不暴露「是否托管静态资产」，
 // settings 里既没有 assets 标记、bindings 为空也无法区分纯静态站与无绑定的
 // 代理型 Worker（实测 2026-09）。与其靠特征猜测，不如由配置显式声明。
-func (s *server) listWorkerSiteViews(ctx context.Context, perProject int) ([]pagesProjectView, error) {
+func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNames map[string]string) ([]pagesProjectView, error) {
 	if len(s.cf.workerSites) == 0 {
 		return nil, nil
 	}
@@ -337,7 +389,7 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int) ([]pag
 			if err != nil {
 				log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, err)
 			}
-			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, s.cf.accountID)
+			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, s.cf.accountID, repoNames)
 		}(i, sc)
 	}
 	wg.Wait()
@@ -477,6 +529,10 @@ func (s *server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 	sem := make(chan struct{}, 6)
 	ch := make(chan result, len(repos))
 	for i, repo := range repos {
+		// 已归档仓库不再在跑，服务视图不展示（应用视图另有「已停止」状态可查）
+		if repo.Archived {
+			continue
+		}
 		owner, name := splitFullName(repo.FullName)
 		sem <- struct{}{}
 		go func(i int, repo GHRepo, owner, name string) {

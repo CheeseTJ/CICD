@@ -178,7 +178,10 @@ type pagesDeploymentView struct {
 }
 
 type pagesProjectView struct {
-	Name             string                `json:"name"`
+	Name string `json:"name"`
+	// DisplayName 是对应 GitHub 仓库的真实名称（大小写正确，如 Remind-web）。
+	// Cloudflare 侧名称一律小写（remind-web），展示时优先用它，查不到时同 Name。
+	DisplayName      string                `json:"display_name"`
 	Subdomain        string                `json:"subdomain"`
 	CustomDomains    []string              `json:"custom_domains"`
 	SiteURL          string                `json:"site_url"`
@@ -189,9 +192,10 @@ type pagesProjectView struct {
 	Recent           []pagesDeploymentView `json:"recent"`
 }
 
-func buildPagesProjectView(p cfProject, deps []cfDeployment, accountID string) pagesProjectView {
+func buildPagesProjectView(p cfProject, deps []cfDeployment, accountID string, repoNames map[string]string) pagesProjectView {
 	v := pagesProjectView{
 		Name:             p.Name,
+		DisplayName:      lookupRepoDisplayName(repoNames, p.Name),
 		Subdomain:        p.Subdomain,
 		ProductionBranch: p.ProductionBranch,
 		SiteURL:          "https://" + p.Subdomain,
@@ -355,9 +359,10 @@ func (c *cloudflareClient) listWorkerVersions(ctx context.Context, script string
 }
 
 // buildWorkerProjectView 把 Workers 静态站转成与 Pages 相同的视图，前端复用一套渲染。
-func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, accountID string) pagesProjectView {
+func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, accountID string, repoNames map[string]string) pagesProjectView {
 	v := pagesProjectView{
 		Name:         w.ID,
+		DisplayName:  lookupRepoDisplayName(repoNames, w.ID),
 		SiteURL:      "",
 		DashboardURL: "https://dash.cloudflare.com/" + accountID + "/workers/services/view/" + w.ID,
 		Platform:     PlatformCF,
