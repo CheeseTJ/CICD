@@ -288,3 +288,147 @@ func parseRFC3339(s string) (time.Time, bool) {
 	}
 	return t, true
 }
+
+/* ---------- Workers 静态托管（Workers Static Assets） ----------
+ *
+ * 前端站点除了 Pages，还有一类是「纯静态 Worker」（wrangler.jsonc 配 assets，
+ * 如 remind-web）。它们不在 Pages API 里，部署记录走 Workers Versions API。
+ * 这里把这类 Worker 也转成 pagesProjectView，与 Pages 站点同列表展示。
+ */
+
+type cfWorkerScript struct {
+	ID         string `json:"id"`
+	CreatedOn  string `json:"created_on"`
+	ModifiedOn string `json:"modified_on"`
+}
+
+// listWorkerScripts 列出账号下全部 Worker。Token 需要 Workers Scripts:Read。
+func (c *cloudflareClient) listWorkerScripts(ctx context.Context) ([]cfWorkerScript, error) {
+	var out []cfWorkerScript
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts", nil, &out)
+	return out, err
+}
+
+type cfWorkerBinding struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+type cfWorkerSettings struct {
+	Bindings []cfWorkerBinding `json:"bindings"`
+	// 纯静态 Worker 的 assets 配置出现在 settings 顶层（也可能以 assets binding 出现），
+	// 用 RawMessage 接住，存在即视为静态站。
+	Assets json.RawMessage `json:"assets"`
+}
+
+// isStaticWorker 判断该 Worker 是否托管静态资产（前端站点）：
+// API 型 Worker（如 music-worker）没有 assets，不会混进前端站点页。
+func isStaticWorker(s cfWorkerSettings) bool {
+	if len(s.Assets) > 0 && string(s.Assets) != "null" {
+		return true
+	}
+	for _, b := range s.Bindings {
+		if b.Type == "assets" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *cloudflareClient) listWorkerSettings(ctx context.Context, script string) (cfWorkerSettings, error) {
+	var out cfWorkerSettings
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts/"+url.PathEscape(script)+"/settings", nil, &out)
+	return out, err
+}
+
+type cfWorkerDomain struct {
+	Hostname string `json:"hostname"`
+	Service  string `json:"service"`
+}
+
+// listWorkerDomains 拿全部 Workers 自定义域，一次拉全再按 service（script 名）分组。
+func (c *cloudflareClient) listWorkerDomains(ctx context.Context) ([]cfWorkerDomain, error) {
+	var out []cfWorkerDomain
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/domains", nil, &out)
+	return out, err
+}
+
+// getWorkerSubdomain 拿 workers.dev 子域（workers_dev=false 的站点用不上，失败不致命）。
+func (c *cloudflareClient) getWorkerSubdomain(ctx context.Context) (string, error) {
+	var out struct {
+		Subdomain string `json:"subdomain"`
+	}
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/subdomain", nil, &out)
+	return out.Subdomain, err
+}
+
+type cfWorkerVersion struct {
+	ID     string `json:"id"`
+	Number int64  `json:"number"`
+	// created_on 在 metadata 里（顶层只有 id/number），见 CF API 文档
+	Metadata struct {
+		CreatedOn string `json:"created_on"`
+	} `json:"metadata"`
+}
+
+// listWorkerVersions 取静态 Worker 的最近部署版本（新→旧）。
+// Workers 版本只有部署成功才会存在，状态一律视为 success。
+func (c *cloudflareClient) listWorkerVersions(ctx context.Context, script string, limit int) ([]cfWorkerVersion, error) {
+	var resp struct {
+		Items []cfWorkerVersion `json:"items"`
+	}
+	query := map[string]string{}
+	if limit > 0 {
+		query["per_page"] = strconv.Itoa(limit)
+	}
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts/"+url.PathEscape(script)+"/versions", query, &resp)
+	return resp.Items, err
+}
+
+// buildWorkerProjectView 把 Workers 静态站转成与 Pages 相同的视图，前端复用一套渲染。
+func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, accountID string) pagesProjectView {
+	v := pagesProjectView{
+		Name:         w.ID,
+		SiteURL:      "",
+		DashboardURL: "https://dash.cloudflare.com/" + accountID + "/workers/services/view/" + w.ID,
+		Platform:     PlatformCF,
+		Recent:       []pagesDeploymentView{},
+	}
+	for _, d := range domains {
+		if d.Service == w.ID {
+			v.CustomDomains = append(v.CustomDomains, d.Hostname)
+		}
+	}
+	if subdomain != "" {
+		v.Subdomain = w.ID + "." + subdomain
+	}
+	// workers_dev=false（如 remind-web）时没有 workers.dev 地址，优先自定义域
+	if len(v.CustomDomains) > 0 {
+		v.SiteURL = "https://" + v.CustomDomains[0]
+	} else if v.Subdomain != "" {
+		v.SiteURL = "https://" + v.Subdomain
+	}
+
+	for _, ver := range versions {
+		vm := pagesDeploymentView{
+			ID:          ver.ID,
+			Environment: "production",
+			// 版本存在即部署成功；Workers 没有独立 build 阶段，stage 记为 deploy
+			Status:    "success",
+			Stage:     "deploy",
+			CreatedOn: ver.Metadata.CreatedOn,
+		}
+		// 版本号即部署 ID 前缀，可当作短标识；commit 对应关系由 Actions 页承担，这里留空
+		if len(ver.ID) > 8 {
+			vm.CommitShort = ver.ID[:8]
+		} else {
+			vm.CommitShort = ver.ID
+		}
+		v.Recent = append(v.Recent, vm)
+	}
+	if len(v.Recent) > 0 {
+		latest := v.Recent[0]
+		v.Latest = &latest
+	}
+	return v
+}

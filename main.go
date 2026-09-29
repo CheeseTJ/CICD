@@ -263,11 +263,77 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
+	wg.Wait()
+
+	// Workers 静态托管（如 remind-web）：不在 Pages API 里，单独拉取后合并进同一列表。
+	// 部分失败（权限不足/单个 Worker 读取失败）只降级不阻断，Pages 数据照常返回。
+	workerViews, err := s.listWorkerSiteViews(ctx, perProject)
+	if err != nil {
+		log.Printf("读取 Workers 静态站点失败（Token 需要 Workers Scripts:Read）: %v", err)
+	}
+	views = append(views, workerViews...)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"configured": true,
 		"account_id": s.cf.accountID,
 		"projects":   views,
 	})
+}
+
+// listWorkerSiteViews 拉取账号下「托管了静态资产」的 Worker，转成前端站点视图。
+func (s *server) listWorkerSiteViews(ctx context.Context, perProject int) ([]pagesProjectView, error) {
+	scripts, err := s.cf.listWorkerScripts(ctx)
+	if err != errNotFound && err != nil {
+		return nil, err
+	}
+	if len(scripts) == 0 {
+		return nil, nil
+	}
+
+	// 自定义域一次拉全，按 service（script 名）分组
+	domains, err := s.cf.listWorkerDomains(ctx)
+	if err != nil {
+		log.Printf("读取 Workers 自定义域失败: %v", err)
+		domains = nil
+	}
+	subdomain, err := s.cf.getWorkerSubdomain(ctx)
+	if err != nil {
+		subdomain = "" // workers.dev 子域缺失不致命（多数站点用自定义域）
+	}
+
+	// 先筛出静态站，再并发拉各自的版本记录
+	var statics []cfWorkerScript
+	for _, sc := range scripts {
+		settings, err := s.cf.listWorkerSettings(ctx, sc.ID)
+		if err != nil {
+			log.Printf("读取 Worker settings 失败 %s: %v", sc.ID, err)
+			continue
+		}
+		if isStaticWorker(settings) {
+			statics = append(statics, sc)
+		}
+	}
+
+	views := make([]pagesProjectView, len(statics))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, sc := range statics {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, sc cfWorkerScript) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			c, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			versions, err := s.cf.listWorkerVersions(c, sc.ID, perProject)
+			if err != nil {
+				log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, err)
+			}
+			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, s.cf.accountID)
+		}(i, sc)
+	}
+	wg.Wait()
+	return views, nil
 }
 
 func (s *server) handleRepos(w http.ResponseWriter, r *http.Request) {
