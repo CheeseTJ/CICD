@@ -529,8 +529,10 @@ func (s *server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 	sem := make(chan struct{}, 6)
 	ch := make(chan result, len(repos))
 	for i, repo := range repos {
-		// 已归档仓库不再在跑，服务视图不展示（应用视图另有「已停止」状态可查）
+		// 已归档仓库不再在跑，服务视图不展示（应用视图另有「已停止」状态可查）。
+		// 但占位结果必须照发：收集端按 len(repos) 等待，跳过会导致 handler 永久挂起。
 		if repo.Archived {
+			ch <- result{idx: i}
 			continue
 		}
 		owner, name := splitFullName(repo.FullName)
