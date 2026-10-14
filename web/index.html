@@ -981,6 +981,12 @@
         }
       }
       const data = await res.json().catch(() => ({}));
+      // 刷新后重试仍 401（刷新令牌已失效/被吊销、签发的令牌不合用等）：
+      // 会话救不回来，同样退回登录框，而不是把空页面留给用户。
+      if (res.status === 401 && authConfig.required) {
+        requireLogin(data.error || '登录已过期，请重新登录');
+        throw new Error(data.error || '登录已过期');
+      }
       // 403：令牌有效但账号不是管理员（或不在邮箱白名单内）。
       // 刷新令牌救不回来，清掉登录态直接退回登录页说明原因，而不是留在空控制台里。
       if (res.status === 403) {
