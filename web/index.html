@@ -763,7 +763,7 @@
           <div class="page-head">
             <div>
               <h1>服务监控</h1>
-              <p>由后端定时探测各服务健康接口（HEALTH_TARGETS 配置），页面每 15 秒刷新一次</p>
+              <p>由浏览器直连各服务健康接口（HEALTH_TARGETS 配置），仅本页可见时每 15 秒探测一次</p>
             </div>
             <div class="live-note" id="monitorLive"></div>
           </div>
@@ -1878,16 +1878,18 @@
     }
 
     function renderMonitorStats(list) {
+      // 暂停开放单独一档：它是服务按设计工作（如 JMReader 的工作时段限制），
+      // 与「不可用」不是一回事，混在一起会长期误报
       renderStatCards('monitorStats', [
         { label: '监控目标', value: list.length, icon: 'activity' },
         { label: '正常', value: list.filter(t => monStateKey(t) === 'up').length, icon: 'check' },
-        { label: '异常', value: list.filter(t => ['down', 'paused'].includes(monStateKey(t))).length, icon: 'close' },
-        { label: '跨域受限', value: list.filter(t => monStateKey(t) === 'cors').length, icon: 'globe', webOnly: true }
+        { label: '不可用', value: list.filter(t => monStateKey(t) === 'down').length, icon: 'close' },
+        { label: '暂停 / 跨域受限', value: list.filter(t => ['paused', 'cors'].includes(monStateKey(t))).length, icon: 'clock', webOnly: true }
       ]);
     }
 
     function renderMonitorPills() {
-      const defs = [['all', '全部'], ['up', '正常'], ['bad', '异常'], ['cors', '跨域受限']];
+      const defs = [['all', '全部'], ['up', '正常'], ['down', '不可用'], ['warn', '暂停 / 跨域受限']];
       const box = document.getElementById('monitorPills');
       box.innerHTML = '';
       defs.forEach(([key, label]) => {
@@ -1915,7 +1917,10 @@
       a.title = t.url;
       name.appendChild(a);
       title.appendChild(name);
-      title.appendChild(el('div', 'card-desc', t.url));
+      // 去掉协议前缀再展示：卡片宽度有限，长域名加协议后几乎放不下路径
+      const desc = el('div', 'card-desc', t.url.replace(/^https?:\/\//, ''));
+      desc.title = t.url;
+      title.appendChild(desc);
       top.appendChild(title);
 
       const moreBtn = el('button', 'icon-btn');
@@ -2005,8 +2010,9 @@
           t.name.toLowerCase().includes(k) || t.url.toLowerCase().includes(k));
       }
       if (monitorFilter !== 'all') {
-        list = monitorFilter === 'bad'
-          ? list.filter(t => ['down', 'paused'].includes(monStateKey(t)))
+        // warn = 需要留意但不代表挂了：暂停开放（按设计）与跨域受限（读不到）
+        list = monitorFilter === 'warn'
+          ? list.filter(t => ['paused', 'cors'].includes(monStateKey(t)))
           : list.filter(t => monStateKey(t) === monitorFilter);
       }
       // 有问题的排前面：不可用 → 暂停 → 跨域受限 → 正常
