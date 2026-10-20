@@ -46,12 +46,13 @@ jobs:
           #   JMReader-api   /api/schedule（时段限制时返回 open=false → 显示暂停开放）
           #   WordRush-api   与 eng.june-t.top 同一服务（/api/health 带 DB 探活）
           #   Ucenter-worker Worker 根路径返回纯文本
-          #   Music-worker   Worker 根路径返回纯文本
+          #   Music-worker   自定义域名 valut.june-t.top（不用 xxx.workers.dev：
+          #                  该 dev 域名在部分网络不可达，探测会误报不可用）
           #   Music-api      /health
           #   Remind-api     /healthz
           #   Imgbed-api     额外纳入：/api/health 带 DB + R2 探活
           # 容器虽是 host 网络，仍统一走公网域名：顺带验证 Cloudflare 隧道与证书链。
-          HEALTH_TARGETS=cicd=/api/health,jmreader=https://jm.june-t.top/api/schedule,wordrush=https://eng.june-t.top/api/health,ucenter-worker=https://ucenter.june-t.top/,music-worker=https://music-worker.2697065512-1b5.workers.dev/,music-api=https://music.june-t.top/health,remind=https://remind.june-t.top/healthz,imgbed=https://imgbed.june-t.top/api/health
+          HEALTH_TARGETS=cicd=/api/health,jmreader=https://jm.june-t.top/api/schedule,wordrush=https://eng.june-t.top/api/health,ucenter-worker=https://ucenter.june-t.top/,music-worker=https://valut.june-t.top/,music-api=https://music.june-t.top/health,remind=https://remind.june-t.top/healthz,imgbed=https://imgbed.june-t.top/api/health
           # 本控制台对外地址：用于预判各健康接口是否允许本页跨域读取
           PUBLIC_ORIGIN=https://cicd.taojun.top
           EOF
