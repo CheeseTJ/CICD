@@ -23,13 +23,15 @@ type config struct {
 	DataFile         string
 	GitHubToken      string
 	PGYERKey         string
-	GitHubOwner      string        // 可选：非空时列出指定用户/组织的公开仓库
-	AutoSyncInterval time.Duration // 自动同步轮询间隔
-	CFToken          string        // 可选：Cloudflare API Token（Pages:Read + Workers Scripts:Read），用于展示前端站点部署记录
-	CFAccountID      string        // 可选：Cloudflare 账号 ID
-	CFProjects       []string      // 可选：只展示这些 Pages 项目，空表示全部
-	CFWorkerSites    []string      // 显式标识：哪些 Worker 是前端静态站（如 remind-web），空表示不展示 Workers 站点
-	Auth             authConfig    // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
+	GitHubOwner      string          // 可选：非空时列出指定用户/组织的公开仓库
+	AutoSyncInterval time.Duration   // 自动同步轮询间隔
+	CFToken          string          // 可选：Cloudflare API Token（Pages:Read + Workers Scripts:Read），用于展示前端站点部署记录
+	CFAccountID      string          // 可选：Cloudflare 账号 ID
+	CFProjects       []string        // 可选：只展示这些 Pages 项目，空表示全部
+	CFWorkerSites    []string        // 显式标识：哪些 Worker 是前端静态站（如 remind-web），空表示不展示 Workers 站点
+	HealthTargets    []monitorTarget // 可选：被监控服务的健康地址（HEALTH_TARGETS）
+	MonitorInterval  time.Duration   // 健康探测间隔（MONITOR_INTERVAL，默认 30s）
+	Auth             authConfig      // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
 }
 
 func loadConfig() *config {
@@ -44,6 +46,8 @@ func loadConfig() *config {
 		CFAccountID:      os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		CFProjects:       splitCSV(os.Getenv("CF_PAGES_PROJECTS")),
 		CFWorkerSites:    splitCSV(os.Getenv("CF_WORKERS_SITES")),
+		HealthTargets:    parseTargets(os.Getenv("HEALTH_TARGETS")),
+		MonitorInterval:  getenvDuration("MONITOR_INTERVAL", 30*time.Second),
 		Auth: authConfig{
 			UserCenterURL: os.Getenv("USER_CENTER_URL"),
 			App:           getenv("USER_CENTER_APP", "cicd"),
@@ -86,6 +90,7 @@ type server struct {
 	pgyer *pgyerClient
 	cf    *cloudflareClient
 	auth  *authenticator
+	mon   *monitor // 服务健康监控（HEALTH_TARGETS 为空时仍创建，但无目标）
 
 	syncMu  sync.Mutex
 	syncing map[string]bool
@@ -150,6 +155,7 @@ func main() {
 		pgyer:   &pgyerClient{http: newHTTPClient(), apiKey: cfg.PGYERKey},
 		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects, workerSites: cfg.CFWorkerSites},
 		auth:    newAuthenticator(cfg.Auth, newHTTPClient()),
+		mon:     newMonitor(cfg.HealthTargets, cfg.MonitorInterval),
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 	}
@@ -166,8 +172,13 @@ func main() {
 	mux.HandleFunc("/api/repos/autosync", s.auth.wrap(s.handleAutoSync))
 	mux.HandleFunc("/api/repos/sync", s.auth.wrap(s.handleSync))
 	mux.HandleFunc("/api/repos/sync/progress", s.auth.wrap(s.handleSyncProgress))
+	mux.HandleFunc("/api/monitor", s.auth.wrap(s.handleMonitor))
 
 	s.startAutoSync()
+	s.mon.start()
+	if n := len(cfg.HealthTargets); n > 0 {
+		log.Printf("健康监控已启用：%d 个目标，间隔 %s", n, cfg.MonitorInterval)
+	}
 
 	addr := ":" + cfg.Port
 	if cfg.Auth.enabled() {
@@ -220,6 +231,8 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	out["cloudflare_token"] = s.cfg.CFToken != ""
 	out["cloudflare_account_id"] = s.cfg.CFAccountID != ""
 	out["cf_pages_projects"] = strings.Join(s.cfg.CFProjects, ",")
+	out["monitor_targets"] = len(s.cfg.HealthTargets)
+	out["monitor_interval"] = s.cfg.MonitorInterval.String()
 	writeJSON(w, http.StatusOK, out)
 }
 

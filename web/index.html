@@ -344,6 +344,39 @@
     .build-status.run { color: #7eb0ff; }
     .build-meta { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+    /* 监控视图：健康状态条（近 N 次探测的小方块） */
+    .mon-bars { display: flex; align-items: flex-end; gap: 2px; height: 26px; }
+    .mon-bar {
+      flex: 1 1 auto; min-width: 3px; max-width: 9px;
+      height: 100%; border-radius: 2px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .mon-bar.ok { background: var(--green); }
+    .mon-bar.paused { background: var(--orange); }
+    .mon-bar.bad { background: var(--red); }
+    .mon-bar.off { background: var(--muted-dim); }
+    .mon-metrics { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+    .mon-metric { display: inline-flex; align-items: center; gap: 5px; }
+    .mon-metric b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .mon-url {
+      font-size: 12px; color: var(--muted-dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .status.paused { background: rgba(245, 158, 11, 0.12); color: var(--orange); border-color: rgba(245, 158, 11, 0.28); }
+    .live-dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); margin-right: 6px;
+      box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
+      animation: livePulse 2s infinite;
+    }
+    @keyframes livePulse {
+      0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45); }
+      70% { box-shadow: 0 0 0 7px rgba(34, 197, 94, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+    .live-note { display: inline-flex; align-items: center; font-size: 12.5px; color: var(--muted); }
+
     .progress { display: none; height: 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
     .progress.on { display: block; }
     .progress-bar { height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width .3s; }
@@ -620,6 +653,10 @@
           <span class="nav-icon" data-icon="cloud"></span>
           <span class="nav-label">前端</span>
         </button>
+        <button class="nav-item" data-view="monitor">
+          <span class="nav-icon" data-icon="activity"></span>
+          <span class="nav-label">监控</span>
+        </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon" data-icon="gear"></span>
           <span class="nav-label">设置</span>
@@ -722,6 +759,31 @@
           <div class="empty" id="pagesEmpty" style="display:none"></div>
         </section>
 
+        <section class="view" id="view-monitor">
+          <div class="page-head">
+            <div>
+              <h1>服务监控</h1>
+              <p>由后端定时探测各服务健康接口（HEALTH_TARGETS 配置），页面每 15 秒刷新一次</p>
+            </div>
+            <div class="live-note" id="monitorLive"></div>
+          </div>
+
+          <div class="stats" id="monitorStats"></div>
+
+          <div class="section-head">
+            <div>
+              <h2>监控目标</h2>
+              <p class="sub" id="monitorCount"></p>
+            </div>
+            <div class="section-tools">
+              <div class="pills" id="monitorPills"></div>
+            </div>
+          </div>
+
+          <div class="grid" id="monitorGrid"></div>
+          <div class="empty" id="monitorEmpty" style="display:none"></div>
+        </section>
+
         <section class="view" id="view-settings">
           <div class="page-head">
             <div>
@@ -758,6 +820,9 @@
     </button>
     <button class="tab" data-view="frontends">
       <span data-icon="cloud" data-size="21"></span><span>前端</span>
+    </button>
+    <button class="tab" data-view="monitor">
+      <span data-icon="activity" data-size="21"></span><span>监控</span>
     </button>
     <button class="tab" data-view="settings">
       <span data-icon="gear" data-size="21"></span><span>设置</span>
@@ -824,6 +889,8 @@
       check: '<path d="m5 13 4 4L19 7"/>',
       cloud: '<path d="M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.2 9.2 4.5 4.5 0 0 0 7 19z"/>',
       play: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5z"/>',
+      activity: '<path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/>',
+      zap: '<path d="M13 3 5 13.5h5.5L11 21l8-10.5h-5.5z"/>',
       trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>'
     };
 
@@ -848,6 +915,11 @@
     let pagesConfigured = false;
     let pagesFilter = 'all';
     let pagesLoaded = false;
+    let monitor = { configured: false, interval: 0, targets: [], history: 0 };
+    let monitorFilter = 'all';
+    let monitorLoaded = false;
+    let monitorTimer = null;   // 监控视图可见时的自动刷新定时器
+    let monitorBusy = false;
 
     /* ---------- 基础工具 ---------- */
     function svg(name, size) {
@@ -1779,9 +1851,236 @@
       }
     }
 
+    /* ---------- 渲染：服务监控（健康探测） ---------- */
+    // 后端探测出的 state → 展示文案与配色
+    function monState(s) {
+      switch (s) {
+        case 'up': return { cls: 'ok', text: '正常', icon: 'check' };
+        case 'paused': return { cls: 'paused', text: '暂停开放', icon: 'clock' };
+        case 'down': return { cls: 'bad', text: '不可用', icon: 'close' };
+        default: return { cls: 'off', text: '等待探测', icon: 'clock' };
+      }
+    }
+
+    function monStateKey(t) {
+      return t.state || 'unknown';
+    }
+
+    function renderMonitorStats(list) {
+      renderStatCards('monitorStats', [
+        { label: '监控目标', value: list.length, icon: 'activity' },
+        { label: '正常', value: list.filter(t => monStateKey(t) === 'up').length, icon: 'check' },
+        { label: '暂停开放', value: list.filter(t => monStateKey(t) === 'paused').length, icon: 'clock', webOnly: true },
+        { label: '不可用', value: list.filter(t => monStateKey(t) === 'down').length, icon: 'close' }
+      ]);
+    }
+
+    function renderMonitorPills() {
+      const defs = [['all', '全部'], ['up', '正常'], ['paused', '暂停'], ['down', '不可用']];
+      const box = document.getElementById('monitorPills');
+      box.innerHTML = '';
+      defs.forEach(([key, label]) => {
+        const b = el('button', 'pill' + (monitorFilter === key ? ' active' : ''), label);
+        b.onclick = () => { monitorFilter = key; renderMonitorPills(); renderMonitor(); };
+        box.appendChild(b);
+      });
+    }
+
+    function renderMonitorCard(t) {
+      const card = el('div', 'card');
+
+      const top = el('div', 'card-top');
+      const st = tileStyle(t.name, 'activity');
+      const tile = el('div', 'tile');
+      tile.style.background = st.background;
+      tile.innerHTML = svg(st.icon, 22);
+      top.appendChild(tile);
+
+      const title = el('div', 'card-title');
+      const name = el('div', 'card-name');
+      const a = el('a', '', t.name);
+      a.href = t.url; a.target = '_blank'; a.rel = 'noopener';
+      a.title = t.url;
+      name.appendChild(a);
+      title.appendChild(name);
+      title.appendChild(el('div', 'card-desc', t.url));
+      top.appendChild(title);
+
+      const moreBtn = el('button', 'icon-btn');
+      moreBtn.innerHTML = svg('dots', 18);
+      moreBtn.title = '更多操作';
+      moreBtn.onclick = e => {
+        e.stopPropagation();
+        openMenu(moreBtn, [
+          {
+            icon: 'zap', label: '立即探测',
+            onClick: () => loadMonitor(true)
+          },
+          {
+            icon: 'external', label: '打开健康接口',
+            onClick: () => window.open(t.url, '_blank', 'noopener')
+          }
+        ]);
+      };
+      top.appendChild(moreBtn);
+      card.appendChild(top);
+
+      const ms = monState(t.state);
+      const status = el('span', 'status ' + ms.cls);
+      status.appendChild(el('span', 'dot'));
+      status.appendChild(document.createTextNode(ms.text));
+      card.appendChild(status);
+
+      // 健康历史条：每条 = 一次探测（旧→新），鼠标悬停看具体时间与耗时
+      const bars = el('div', 'mon-bars');
+      const checks = t.checks || [];
+      const showN = Math.min(checks.length, 40);
+      checks.slice(-showN).forEach(c => {
+        const b = el('div', 'mon-bar ' + (monState(c.state).cls === 'ok' ? 'ok'
+          : monState(c.state).cls === 'paused' ? 'paused'
+          : monState(c.state).cls === 'bad' ? 'bad' : 'off'));
+        b.title = localTime(c.at) + ' · ' + monState(c.state).text +
+          (c.code ? ' · HTTP ' + c.code : '') +
+          (c.latency_ms ? ' · ' + c.latency_ms + 'ms' : '') +
+          (c.message ? '\n' + c.message : '');
+        bars.appendChild(b);
+      });
+      if (!showN) bars.appendChild(el('div', 'mon-bar off'));
+      card.appendChild(bars);
+
+      const metrics = el('div', 'mon-metrics');
+      const addMetric = (label, value, title) => {
+        const m = el('span', 'mon-metric');
+        m.appendChild(document.createTextNode(label + ' '));
+        m.appendChild(el('b', '', value));
+        if (title) m.title = title;
+        metrics.appendChild(m);
+      };
+      addMetric('可用率', t.uptime != null ? t.uptime + '%' : '—', '最近 ' + (t.checks || []).length + ' 次探测中可用（正常 + 暂停）占比');
+      addMetric('延迟', t.latency_ms ? t.latency_ms + 'ms' : '—');
+      if (t.code) addMetric('HTTP', String(t.code));
+      card.appendChild(metrics);
+
+      const time = el('div', 'time');
+      time.innerHTML = svg('clock', 14);
+      time.appendChild(document.createTextNode(t.checked_at ? relTime(t.checked_at) + '检测' : '尚未探测'));
+      time.title = t.checked_at ? localTime(t.checked_at) : '尚未探测';
+      card.appendChild(time);
+
+      if (t.message) {
+        const msg = el('div', 'commit', t.message);
+        msg.title = t.message;
+        card.appendChild(msg);
+      }
+
+      const foot = el('div', 'card-foot');
+      const wf = el('div', 'wf-names', '间隔 ' + (monitor.interval || 0) + 's');
+      wf.title = '后端探测间隔';
+      foot.appendChild(wf);
+
+      const right = el('div', 'foot-right');
+      const btn = el('button', 'btn');
+      btn.innerHTML = svg('refresh', 16);
+      btn.appendChild(el('span', '', '探测'));
+      btn.title = '立即探测全部目标';
+      btn.disabled = monitorBusy;
+      btn.onclick = () => loadMonitor(true);
+      right.appendChild(btn);
+      foot.appendChild(right);
+      card.appendChild(foot);
+
+      addCollapse(card, [monState(t.state).text, t.latency_ms ? t.latency_ms + 'ms' : '',
+        t.checked_at ? relTime(t.checked_at) : ''].filter(Boolean).join(' · '));
+      return card;
+    }
+
+    function renderMonitor() {
+      const targets = monitor.targets || [];
+      renderMonitorStats(targets);
+
+      let list = targets.slice();
+      if (keyword) {
+        const k = keyword.toLowerCase();
+        list = list.filter(t =>
+          t.name.toLowerCase().includes(k) || t.url.toLowerCase().includes(k));
+      }
+      if (monitorFilter !== 'all') list = list.filter(t => monStateKey(t) === monitorFilter);
+      // 有问题的排前面：不可用 → 暂停 → 正常，同组内按名称排
+      const rank = s => ({ down: 0, paused: 1, unknown: 2, up: 3 }[s] ?? 4);
+      list.sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name));
+
+      document.getElementById('monitorCount').textContent = monitor.configured
+        ? '共 ' + targets.length + ' 个目标（后端每 ' + (monitor.interval || 0) + ' 秒探测一次）'
+        : '未配置 HEALTH_TARGETS';
+
+      const live = document.getElementById('monitorLive');
+      live.innerHTML = '';
+      if (monitor.configured) {
+        live.appendChild(el('span', 'live-dot'));
+        live.appendChild(document.createTextNode('每 15 秒自动刷新'));
+      }
+
+      const grid = document.getElementById('monitorGrid');
+      grid.innerHTML = '';
+      list.forEach(t => grid.appendChild(renderMonitorCard(t)));
+
+      const empty = document.getElementById('monitorEmpty');
+      if (list.length) {
+        empty.style.display = 'none';
+      } else {
+        empty.style.display = 'block';
+        empty.innerHTML = '';
+        const icon = el('div', 'empty-icon');
+        icon.innerHTML = svg('activity', 48);
+        empty.appendChild(icon);
+        if (!monitor.configured) {
+          empty.appendChild(el('div', '', '未配置 HEALTH_TARGETS，无法监控服务健康'));
+        } else if (targets.length) {
+          empty.appendChild(el('div', '', '没有符合条件的目标'));
+        } else {
+          empty.appendChild(el('div', '', 'HEALTH_TARGETS 没有解析出有效目标'));
+        }
+      }
+    }
+
+    async function loadMonitor(force) {
+      if (!monitor.configured && monitorLoaded && !force) return;
+      if (monitorBusy) return;
+      monitorBusy = true;
+      try {
+        const data = await api('/api/monitor' + (force ? '?force=1' : ''));
+        monitor = {
+          configured: !!data.configured,
+          interval: data.interval || 0,
+          targets: data.targets || [],
+          history: data.history || 0
+        };
+        monitorLoaded = true;
+        renderMonitor();
+      } catch (e) {
+        const banner = document.getElementById('banner');
+        banner.textContent = '加载监控数据失败：' + e.message;
+        banner.classList.add('show');
+      } finally {
+        monitorBusy = false;
+      }
+    }
+
+    // 只在监控视图可见时自动刷新，避免后台空转
+    function startMonitorPolling() {
+      stopMonitorPolling();
+      monitorTimer = setInterval(() => {
+        if (activeView === 'monitor' && !document.hidden) loadMonitor(false);
+      }, 15000);
+    }
+
+    function stopMonitorPolling() {
+      if (monitorTimer) clearInterval(monitorTimer);
+      monitorTimer = null;
+    }
+
     /* ---------- 渲染：前端站点（Cloudflare Pages） ---------- */
-    function pagesStatusOf(p) {
-      const l = p.latest;
+    function pagesStatusOf(p) {      const l = p.latest;
       if (!l) return { cls: 'off', text: '暂无部署', icon: 'clock' };
       return runStatus(l.status);
     }
@@ -2099,6 +2398,7 @@
       keyword = e.target.value.trim();
       if (activeView === 'deployments') renderDeployments();
       else if (activeView === 'frontends') renderPages();
+      else if (activeView === 'monitor') renderMonitor();
       else render();
     });
     setupSortButton('sortBtn',
@@ -2112,6 +2412,7 @@
     document.getElementById('refreshBtn').onclick = () => {
       if (activeView === 'deployments') return loadDeployments(true);
       if (activeView === 'frontends') return loadPages(true);
+      if (activeView === 'monitor') return loadMonitor(true);
       return loadRepos();
     };
     const openAddModal = () => {
@@ -2155,6 +2456,8 @@
       document.querySelector('.search').classList.toggle('hidden', name === 'settings');
       if (name === 'deployments') loadDeployments();
       if (name === 'frontends') loadPages();
+      if (name === 'monitor') { loadMonitor(); startMonitorPolling(); }
+      else stopMonitorPolling();
       if (name === 'apps') loadDeployments(); // 应用卡片上合并展示构建信息，需要部署数据
       // 设置页的数据来自 /api/health 的配置明细：若首屏那次因令牌过期没拿到，这里补一次
       if (name === 'settings' && authConfig.required && health.github_token === undefined) loadHealth();
@@ -2197,6 +2500,7 @@
       loadRepos();
       loadDeployments();
       loadPages();
+      loadMonitor();
     }
 
     (async function boot() {
@@ -2204,6 +2508,7 @@
       renderPills();
       renderDeployPills();
       renderPagesPills();
+      renderMonitorPills();
       // 幕布全程盖住页面：先拿到 /api/health 判定鉴权，揭幕时用户看到的
       // 直接是登录页或就绪的控制台，而不是先闪一下半成品页面
       await loadHealth();
@@ -2211,7 +2516,7 @@
       if (!authGet('access')) { showLogin(''); return; }
       // 已有令牌：先在幕后完成首屏加载（会话失效会在 api() 里 401→弹登录并揭幕）
       await Promise.race([
-        Promise.allSettled([loadRepos(), loadDeployments(), loadPages()]),
+        Promise.allSettled([loadRepos(), loadDeployments(), loadPages(), loadMonitor()]),
         sleep(3500)  // 兜底：数据再慢也不能把用户晾在幕布后
       ]);
       if (!authGet('access')) return;  // 会话失效：登录框已弹出并揭幕

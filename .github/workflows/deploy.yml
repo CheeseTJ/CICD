@@ -40,6 +40,13 @@ jobs:
           # 邮箱白名单（逗号分隔），在「角色必须是 admin」之上再收窄。
           # 留空=任何管理员都能操作本面板
           ALLOWED_EMAILS=
+          # 服务健康监控：「名称=健康接口URL」，逗号分隔，留空=关闭监控视图。
+          # 容器虽是 host 网络，仍统一走公网域名：顺带验证 Cloudflare 隧道与证书链，
+          # 也不会因为某项服务改监听地址而误判。
+          # 判定：2xx/3xx=正常；503 或 JSON open=false=暂停开放；其它=不可用。
+          HEALTH_TARGETS=jmreader=https://jm.june-t.top/api/schedule,imgbed=https://imgbed.june-t.top/api/health,music=https://music.june-t.top/health,remind=https://remind.june-t.top/healthz,eng=https://eng.june-t.top/api/health
+          # 探测间隔（Go duration 格式）；页面每 15 秒拉取一次缓存结果
+          MONITOR_INTERVAL=30s
           EOF
           chmod 600 .env
 
