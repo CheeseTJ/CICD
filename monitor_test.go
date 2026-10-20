@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestParseTargets(t *testing.T) {
@@ -37,115 +36,141 @@ func TestParseTargets(t *testing.T) {
 	}
 }
 
-func TestClassifyHealth(t *testing.T) {
+func TestIsLoopback(t *testing.T) {
+	cases := map[string]bool{
+		"http://127.0.0.1:8765/health": true,
+		"http://localhost:8090/":       true,
+		"http://[::1]:8080/health":     true,
+		"https://jm.example.com/":      false,
+		"https://10.0.0.5/health":      false, // 内网地址仍算非回环：浏览器可能够不到，
+		// 但这里只回答「是不是本机」，由跨域探测自行判定
+	}
+	for u, want := range cases {
+		if got := isLoopback(u); got != want {
+			t.Errorf("isLoopback(%q) = %v，期望 %v", u, got, want)
+		}
+	}
+}
+
+// 跨域判定：对方回显 * 或回显本控制台来源 = 允许；不回显 = 受限
+func TestProbeCORS(t *testing.T) {
+	// httptest 跑在 127.0.0.1，会被「回环不可直连」短路；这里临时关掉该规则
+	old := loopbackFn
+	loopbackFn = func(string) bool { return false }
+	defer func() { loopbackFn = old }()
+
 	cases := []struct {
-		name string
-		code int
-		body string
-		want string
+		name   string
+		header string
+		want   bool
 	}{
-		{"正常 JSON", 200, `{"ok":true}`, "up"},
-		{"普通 200", 200, `hello`, "up"},
-		{"ok=false", 200, `{"ok":false,"error":"db down"}`, "down"},
-		{"开放时段暂停", 200, `{"open":false,"reason":"工作日上班时间暂停开放"}`, "paused"},
-		{"open=true", 200, `{"open":true}`, "up"},
-		{"503 暂停", 503, `{"detail":"工作日上班时间暂停开放"}`, "paused"},
-		{"503 无体", 503, ``, "paused"},
-		{"500 故障", 500, `boom`, "down"},
-		{"401 鉴权", 401, `{"detail":"需要两步验证"}`, "down"},
-		{"302 跳转", 302, ``, "up"},
+		{"通配符", "*", true},
+		{"精确回显", "https://cicd.example.com", true},
+		{"不返回头", "", false},
+		{"回显了别的来源", "https://other.example.com", false},
 	}
 	for _, c := range cases {
-		state, _ := classifyHealth(c.code, []byte(c.body))
-		if state != c.want {
-			t.Errorf("%s: state=%q，期望 %q", c.name, state, c.want)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 有头才写：模拟真实服务对未授权来源不回 CORS 头
+			if c.header != "" {
+				w.Header().Set("Access-Control-Allow-Origin", c.header)
+			}
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		s := &server{
+			cfg:     &config{PublicOrigin: "https://cicd.example.com"},
+			monHTTP: srv.Client(),
+		}
+		if got := s.probeCORS(context.Background(), srv.URL); got != c.want {
+			t.Errorf("%s: probeCORS = %v，期望 %v", c.name, got, c.want)
+		}
+		srv.Close()
+	}
+}
+
+// 本机地址一律判为不可直连（浏览器访问不到），不再发起请求
+func TestProbeCORSLoopback(t *testing.T) {
+	s := &server{cfg: &config{}, monHTTP: &http.Client{}}
+	if s.probeCORS(context.Background(), "http://127.0.0.1:1/health") {
+		t.Error("回环地址应判为跨域受限")
+	}
+}
+
+// selfOrigin：配置优先，未配置时兜底 *
+func TestSelfOrigin(t *testing.T) {
+	s := &server{cfg: &config{PublicOrigin: "https://cicd.example.com/"}}
+	if got := s.selfOrigin(); got != "https://cicd.example.com" {
+		t.Errorf("selfOrigin = %q，期望去掉尾部斜杠", got)
+	}
+	s = &server{cfg: &config{}}
+	if got := s.selfOrigin(); got != "*" {
+		t.Errorf("未配置时应兜底 *，实际 %q", got)
+	}
+}
+
+// refreshCrossOrigin 把跨域判定结果写回目标清单
+func TestRefreshCrossOrigin(t *testing.T) {
+	old := loopbackFn
+	loopbackFn = func(u string) bool { return u == "http://127.0.0.1:1/health" }
+	defer func() { loopbackFn = old }()
+
+	allow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	}))
+	defer allow.Close()
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("no cors"))
+	}))
+	defer deny.Close()
+
+	s := &server{
+		cfg: &config{
+			PublicOrigin: "https://cicd.example.com",
+			HealthTargets: []monitorTarget{
+				{Key: "allow", Name: "allow", URL: allow.URL},
+				{Key: "deny", Name: "deny", URL: deny.URL},
+				{Key: "local", Name: "local", URL: "http://127.0.0.1:1/health"},
+			},
+		},
+		monHTTP: allow.Client(),
+	}
+	s.refreshCrossOrigin()
+
+	want := map[string]bool{"allow": true, "deny": false, "local": false}
+	for _, tg := range s.cfg.HealthTargets {
+		if tg.CrossOrigin != want[tg.Key] {
+			t.Errorf("%s: CrossOrigin = %v，期望 %v", tg.Key, tg.CrossOrigin, want[tg.Key])
 		}
 	}
 }
 
-// 探测真实 HTTP 服务：验证耗时、状态码归类与提示文案
-func TestMonitorProbe(t *testing.T) {
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer up.Close()
-
-	paused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"detail":"工作日上班时间暂停开放（09:00-18:00），10-20 18:00 恢复"}`))
-	}))
-	defer paused.Close()
-
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer bad.Close()
-
-	m := newMonitor(nil, time.Minute)
-
-	c := m.probe(context.Background(), up.URL)
-	if c.State != "up" || c.Code != 200 {
-		t.Errorf("up: state=%q code=%d", c.State, c.Code)
+// 同源相对路径：浏览器按本页同源请求，不存在 CORS，理应直接判为可直连
+func TestIsSameOrigin(t *testing.T) {
+	if !isSameOrigin("/api/health") {
+		t.Error("相对路径应判为同源")
 	}
-
-	c = m.probe(context.Background(), paused.URL)
-	if c.State != "paused" || c.Code != 503 || c.Message == "" {
-		t.Errorf("paused: state=%q code=%d msg=%q", c.State, c.Code, c.Message)
-	}
-
-	c = m.probe(context.Background(), bad.URL)
-	if c.State != "down" || c.Code != 500 {
-		t.Errorf("bad: state=%q code=%d", c.State, c.Code)
-	}
-
-	// 连不上的地址：归为 down 且带错误信息
-	c = m.probe(context.Background(), "http://127.0.0.1:1/")
-	if c.State != "down" || c.Message == "" {
-		t.Errorf("unreachable: state=%q msg=%q", c.State, c.Message)
+	if isSameOrigin("https://x.test/api/health") {
+		t.Error("绝对地址不应判为同源")
 	}
 }
 
-// 历史记录：最多保留 60 条，uptime 按「up+paused」占比计算
-func TestMonitorHistoryAndUptime(t *testing.T) {
-	m := newMonitor([]monitorTarget{{Key: "x", Name: "x", URL: "http://x.test"}}, time.Minute)
-	m.mu.Lock()
-	m.history["x"] = []monitorCheck{
-		{State: "up"}, {State: "up"}, {State: "paused"}, {State: "down"},
+func TestParseTargetsSameOrigin(t *testing.T) {
+	got := parseTargets("/api/health")
+	if len(got) != 1 || got[0].URL != "/api/health" {
+		t.Fatalf("相对路径目标应被接受，实际 %+v", got)
 	}
-	m.mu.Unlock()
+	// 未写名称时用路径去掉斜杠兜底
+	if got[0].Name != "api/health" {
+		t.Errorf("Name = %q，期望 api/health", got[0].Name)
+	}
+}
 
-	v := m.views()
-	if len(v) != 1 {
-		t.Fatalf("views 长度 = %d", len(v))
-	}
-	if v[0].State != "down" {
-		t.Errorf("state 取最新一条，实际 %q", v[0].State)
-	}
-	if v[0].Uptime != 75 { // 3/4
-		t.Errorf("uptime = %d，期望 75", v[0].Uptime)
-	}
-
-	// 写入超过上限后截断，仅保留最近 60 条
-	target := monitorTarget{Key: "y", Name: "y", URL: "http://y.test"}
-	m.targets = []monitorTarget{target}
-	for i := 0; i < monitorHistorySize+10; i++ {
-		m.mu.Lock()
-		h := append(m.history["y"], monitorCheck{State: "up", At: int64(i)})
-		if len(h) > monitorHistorySize {
-			h = h[len(h)-monitorHistorySize:]
-		}
-		m.history["y"] = h
-		m.mu.Unlock()
-	}
-	m.mu.RLock()
-	n := len(m.history["y"])
-	lastAt := m.history["y"][n-1].At
-	m.mu.RUnlock()
-	if n != monitorHistorySize {
-		t.Errorf("历史长度 = %d，期望 %d", n, monitorHistorySize)
-	}
-	if lastAt != int64(monitorHistorySize+9) {
-		t.Errorf("应保留最新记录，最后一条 at=%d", lastAt)
+func TestRefreshCrossOriginSameOrigin(t *testing.T) {
+	s := &server{cfg: &config{HealthTargets: []monitorTarget{
+		{Key: "self", Name: "self", URL: "/api/health"},
+	}}}
+	s.refreshCrossOrigin()
+	if !s.cfg.HealthTargets[0].CrossOrigin {
+		t.Error("同源相对路径应标记为可直连")
 	}
 }

@@ -915,11 +915,12 @@
     let pagesConfigured = false;
     let pagesFilter = 'all';
     let pagesLoaded = false;
-    let monitor = { configured: false, interval: 0, targets: [], history: 0 };
+    let monitor = { configured: false, interval: 15, targets: [] };
     let monitorFilter = 'all';
     let monitorLoaded = false;
-    let monitorTimer = null;   // 监控视图可见时的自动刷新定时器
-    let monitorBusy = false;
+    let monitorTimer = null;   // 监控视图可见时的探测定时器
+    let monitorBusy = false;   // 正在拉取目标清单
+    let probeBusy = false;     // 正在探测（避免重复点击并发探测）
 
     /* ---------- 基础工具 ---------- */
     function svg(name, size) {
@@ -1851,13 +1852,23 @@
       }
     }
 
-    /* ---------- 渲染：服务监控（健康探测） ---------- */
-    // 后端探测出的 state → 展示文案与配色
+    /* ---------- 渲染：服务监控（浏览器直连探测） ----------
+       探测全部在浏览器里做：
+         - 不占用服务器带宽，也没有「服务端空转轮询」的问题；
+         - 不打开本页就一个请求都不发；
+         - 看到的是「你自己当前网络」能否访问该服务。
+       代价是跨域：目标必须返回 Access-Control-Allow-Origin 才能读到响应。
+       服务端预先判定过每个目标能否直连（target.cross_origin），这里对它说
+       「不能」的目标不做盲探，直接标成跨域受限，避免把 CORS 失败误报成宕机。 */
+
+    // 探测结果 → 展示文案与配色。注意区分「服务不可用」与「跨域被拦」：
+    // 后者说明服务本身可能正常，只是浏览器不允许读取响应。
     function monState(s) {
       switch (s) {
         case 'up': return { cls: 'ok', text: '正常', icon: 'check' };
         case 'paused': return { cls: 'paused', text: '暂停开放', icon: 'clock' };
         case 'down': return { cls: 'bad', text: '不可用', icon: 'close' };
+        case 'cors': return { cls: 'warn', text: '跨域受限', icon: 'globe' };
         default: return { cls: 'off', text: '等待探测', icon: 'clock' };
       }
     }
@@ -1870,13 +1881,13 @@
       renderStatCards('monitorStats', [
         { label: '监控目标', value: list.length, icon: 'activity' },
         { label: '正常', value: list.filter(t => monStateKey(t) === 'up').length, icon: 'check' },
-        { label: '暂停开放', value: list.filter(t => monStateKey(t) === 'paused').length, icon: 'clock', webOnly: true },
-        { label: '不可用', value: list.filter(t => monStateKey(t) === 'down').length, icon: 'close' }
+        { label: '异常', value: list.filter(t => ['down', 'paused'].includes(monStateKey(t))).length, icon: 'close' },
+        { label: '跨域受限', value: list.filter(t => monStateKey(t) === 'cors').length, icon: 'globe', webOnly: true }
       ]);
     }
 
     function renderMonitorPills() {
-      const defs = [['all', '全部'], ['up', '正常'], ['paused', '暂停'], ['down', '不可用']];
+      const defs = [['all', '全部'], ['up', '正常'], ['bad', '异常'], ['cors', '跨域受限']];
       const box = document.getElementById('monitorPills');
       box.innerHTML = '';
       defs.forEach(([key, label]) => {
@@ -1898,6 +1909,7 @@
 
       const title = el('div', 'card-title');
       const name = el('div', 'card-name');
+      // 健康接口多不允许跨域（点了也是浏览器报错），这里只显示地址不跳转
       const a = el('a', '', t.name);
       a.href = t.url; a.target = '_blank'; a.rel = 'noopener';
       a.title = t.url;
@@ -1913,11 +1925,11 @@
         e.stopPropagation();
         openMenu(moreBtn, [
           {
-            icon: 'zap', label: '立即探测',
-            onClick: () => loadMonitor(true)
+            icon: 'zap', label: '重新探测',
+            onClick: () => probeOne(t.key)
           },
           {
-            icon: 'external', label: '打开健康接口',
+            icon: 'external', label: '在新标签打开',
             onClick: () => window.open(t.url, '_blank', 'noopener')
           }
         ]);
@@ -1929,25 +1941,10 @@
       const status = el('span', 'status ' + ms.cls);
       status.appendChild(el('span', 'dot'));
       status.appendChild(document.createTextNode(ms.text));
+      if (t.crossOrigin === false) status.title = '该服务未返回 Access-Control-Allow-Origin，浏览器无法读取响应';
       card.appendChild(status);
 
-      // 健康历史条：每条 = 一次探测（旧→新），鼠标悬停看具体时间与耗时
-      const bars = el('div', 'mon-bars');
-      const checks = t.checks || [];
-      const showN = Math.min(checks.length, 40);
-      checks.slice(-showN).forEach(c => {
-        const b = el('div', 'mon-bar ' + (monState(c.state).cls === 'ok' ? 'ok'
-          : monState(c.state).cls === 'paused' ? 'paused'
-          : monState(c.state).cls === 'bad' ? 'bad' : 'off'));
-        b.title = localTime(c.at) + ' · ' + monState(c.state).text +
-          (c.code ? ' · HTTP ' + c.code : '') +
-          (c.latency_ms ? ' · ' + c.latency_ms + 'ms' : '') +
-          (c.message ? '\n' + c.message : '');
-        bars.appendChild(b);
-      });
-      if (!showN) bars.appendChild(el('div', 'mon-bar off'));
-      card.appendChild(bars);
-
+      // 关键指标：延迟、状态码。跨域受限时没有可读的状态码
       const metrics = el('div', 'mon-metrics');
       const addMetric = (label, value, title) => {
         const m = el('span', 'mon-metric');
@@ -1956,14 +1953,17 @@
         if (title) m.title = title;
         metrics.appendChild(m);
       };
-      addMetric('可用率', t.uptime != null ? t.uptime + '%' : '—', '最近 ' + (t.checks || []).length + ' 次探测中可用（正常 + 暂停）占比');
-      addMetric('延迟', t.latency_ms ? t.latency_ms + 'ms' : '—');
-      if (t.code) addMetric('HTTP', String(t.code));
+      if (t.state === 'cors') {
+        addMetric('原因', 'CORS', '目标未允许本控制台跨域读取，需对方放行来源或改走同源路径');
+      } else {
+        addMetric('延迟', t.latency_ms != null && t.latency_ms >= 0 ? t.latency_ms + 'ms' : '—');
+        if (t.code) addMetric('HTTP', String(t.code));
+      }
       card.appendChild(metrics);
 
       const time = el('div', 'time');
       time.innerHTML = svg('clock', 14);
-      time.appendChild(document.createTextNode(t.checked_at ? relTime(t.checked_at) + '检测' : '尚未探测'));
+      time.appendChild(document.createTextNode(t.checked_at ? relTime(t.checked_at) + '探测' : '尚未探测'));
       time.title = t.checked_at ? localTime(t.checked_at) : '尚未探测';
       card.appendChild(time);
 
@@ -1974,22 +1974,22 @@
       }
 
       const foot = el('div', 'card-foot');
-      const wf = el('div', 'wf-names', '间隔 ' + (monitor.interval || 0) + 's');
-      wf.title = '后端探测间隔';
+      const wf = el('div', 'wf-names', '浏览器直连');
+      wf.title = '由本页面直接请求健康接口，不经过 cicd 服务端';
       foot.appendChild(wf);
 
       const right = el('div', 'foot-right');
       const btn = el('button', 'btn');
       btn.innerHTML = svg('refresh', 16);
       btn.appendChild(el('span', '', '探测'));
-      btn.title = '立即探测全部目标';
-      btn.disabled = monitorBusy;
-      btn.onclick = () => loadMonitor(true);
+      btn.title = '立即探测该服务';
+      btn.onclick = () => probeOne(t.key);
       right.appendChild(btn);
       foot.appendChild(right);
       card.appendChild(foot);
 
-      addCollapse(card, [monState(t.state).text, t.latency_ms ? t.latency_ms + 'ms' : '',
+      addCollapse(card, [monState(t.state).text,
+        t.latency_ms != null && t.latency_ms >= 0 ? t.latency_ms + 'ms' : '',
         t.checked_at ? relTime(t.checked_at) : ''].filter(Boolean).join(' · '));
       return card;
     }
@@ -2004,20 +2004,25 @@
         list = list.filter(t =>
           t.name.toLowerCase().includes(k) || t.url.toLowerCase().includes(k));
       }
-      if (monitorFilter !== 'all') list = list.filter(t => monStateKey(t) === monitorFilter);
-      // 有问题的排前面：不可用 → 暂停 → 正常，同组内按名称排
-      const rank = s => ({ down: 0, paused: 1, unknown: 2, up: 3 }[s] ?? 4);
+      if (monitorFilter !== 'all') {
+        list = monitorFilter === 'bad'
+          ? list.filter(t => ['down', 'paused'].includes(monStateKey(t)))
+          : list.filter(t => monStateKey(t) === monitorFilter);
+      }
+      // 有问题的排前面：不可用 → 暂停 → 跨域受限 → 正常
+      const rank = s => ({ down: 0, paused: 1, cors: 2, unknown: 3, up: 4 }[s] ?? 5);
       list.sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name));
 
       document.getElementById('monitorCount').textContent = monitor.configured
-        ? '共 ' + targets.length + ' 个目标（后端每 ' + (monitor.interval || 0) + ' 秒探测一次）'
+        ? '共 ' + targets.length + ' 个目标（探测在你本机浏览器发起，服务端不参与）'
         : '未配置 HEALTH_TARGETS';
 
       const live = document.getElementById('monitorLive');
       live.innerHTML = '';
       if (monitor.configured) {
         live.appendChild(el('span', 'live-dot'));
-        live.appendChild(document.createTextNode('每 15 秒自动刷新'));
+        live.appendChild(document.createTextNode('每 ' + (monitor.interval || 15) + ' 秒探测（仅本页可见时）'));
+        live.title = '只在你停留本页时探测；切走、关闭页面或切到后台标签即停止，不产生任何请求';
       }
 
       const grid = document.getElementById('monitorGrid');
@@ -2043,41 +2048,133 @@
       }
     }
 
-    async function loadMonitor(force) {
-      if (!monitor.configured && monitorLoaded && !force) return;
+    // 解析健康接口响应体，识别「服务活着但主动暂停」（如 JMReader 的 open=false）
+    function classifyProbe(status, text) {
+      let payload = null;
+      try { payload = JSON.parse(text); } catch (e) { /* 非 JSON：只看状态码 */ }
+      const note = payload && (payload.reason || payload.detail || payload.error) || '';
+      if (status >= 200 && status < 400) {
+        if (payload && payload.open === false) return { state: 'paused', message: note || '服务暂停开放' };
+        if (payload && payload.ok === false) return { state: 'down', message: note || '服务上报异常' };
+        return { state: 'up', message: note };
+      }
+      if (status === 503) return { state: 'paused', message: note || '服务不可用（503）' };
+      return { state: 'down', message: note || ('HTTP ' + status) };
+    }
+
+    // 探测单个目标：浏览器直连，带超时，区分「跨域被拦」与真实故障
+    async function probeTarget(t, timeoutMs) {
+      const started = performance.now();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs || 8000);
+      try {
+        // cache: no-store 防止浏览器缓存让探测失真
+        const res = await fetch(t.url, {
+          method: 'GET', mode: 'cors', cache: 'no-store',
+          redirect: 'follow', signal: ctrl.signal
+        });
+        const text = await res.text().catch(() => '');
+        const r = classifyProbe(res.status, text);
+        return {
+          state: r.state, code: res.status, message: r.message,
+          latency_ms: Math.round(performance.now() - started),
+          checked_at: Math.floor(Date.now() / 1000)
+        };
+      } catch (e) {
+        // TypeError 几乎总是跨域被拦（读到响应前就失败）；AbortError 是超时；
+        // 其余按网络错误处理
+        const aborted = e && e.name === 'AbortError';
+        const isCors = e instanceof TypeError;
+        return {
+          state: isCors ? 'cors' : 'down',
+          code: 0,
+          message: isCors
+            ? '浏览器被 CORS 拦下（对方未允许跨域读取）：可能服务正常，需对方放行来源'
+            : (aborted ? '探测超时' : (e && e.message) || '请求失败'),
+          latency_ms: Math.round(performance.now() - started),
+          checked_at: Math.floor(Date.now() / 1000)
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // 探测全部目标（并发，各自独立超时）
+    async function probeAll(onlyKey) {
+      const list = onlyKey
+        ? monitor.targets.filter(t => t.key === onlyKey)
+        : monitor.targets;
+      await Promise.all(list.map(async t => {
+        // 服务端判定不可直连的目标不做盲探：直接标跨域受限
+        if (t.crossOrigin === false) {
+          Object.assign(t, {
+            state: 'cors', code: 0, latency_ms: -1,
+            message: '该服务未允许本控制台跨域读取，浏览器无法判定其状态',
+            checked_at: Math.floor(Date.now() / 1000)
+          });
+          return;
+        }
+        const r = await probeTarget(t);
+        Object.assign(t, r);
+      }));
+      renderMonitor();
+    }
+
+    function probeOne(key) {
+      if (probeBusy) return;
+      probeBusy = true;
+      probeAll(key).finally(() => { probeBusy = false; });
+    }
+
+    // 拉取「监控谁」的清单（含服务端预判的跨域能力），随后立刻探测一轮
+    async function loadMonitor() {
       if (monitorBusy) return;
       monitorBusy = true;
       try {
-        const data = await api('/api/monitor' + (force ? '?force=1' : ''));
+        const data = await api('/api/monitor');
         monitor = {
           configured: !!data.configured,
-          interval: data.interval || 0,
-          targets: data.targets || [],
-          history: data.history || 0
+          interval: data.refresh_interval || 15,
+          targets: (data.targets || []).map(t => ({
+            key: t.key, name: t.name, url: t.url,
+            crossOrigin: t.cross_origin !== false,
+            state: 'unknown', code: 0, latency_ms: null, message: '', checked_at: 0
+          }))
         };
         monitorLoaded = true;
         renderMonitor();
       } catch (e) {
         const banner = document.getElementById('banner');
-        banner.textContent = '加载监控数据失败：' + e.message;
+        banner.textContent = '加载监控目标失败：' + e.message;
         banner.classList.add('show');
       } finally {
         monitorBusy = false;
       }
+      if (monitor.configured) await probeAll();
     }
 
-    // 只在监控视图可见时自动刷新，避免后台空转
+    // 只在本页可见时探测：切走 / 切后台 / 关闭页面即停止，不产生任何请求
     function startMonitorPolling() {
       stopMonitorPolling();
       monitorTimer = setInterval(() => {
-        if (activeView === 'monitor' && !document.hidden) loadMonitor(false);
-      }, 15000);
+        if (activeView === 'monitor' && !document.hidden) probeAll();
+      }, (monitor.interval || 15) * 1000);
     }
 
     function stopMonitorPolling() {
       if (monitorTimer) clearInterval(monitorTimer);
       monitorTimer = null;
     }
+
+    // 切到后台标签 / 最小化也算离开：停止探测，回到前台再恢复
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        stopMonitorPolling();
+      } else if (activeView === 'monitor') {
+        probeAll();
+        startMonitorPolling();
+      }
+    });
 
     /* ---------- 渲染：前端站点（Cloudflare Pages） ---------- */
     function pagesStatusOf(p) {      const l = p.latest;
@@ -2412,7 +2509,7 @@
     document.getElementById('refreshBtn').onclick = () => {
       if (activeView === 'deployments') return loadDeployments(true);
       if (activeView === 'frontends') return loadPages(true);
-      if (activeView === 'monitor') return loadMonitor(true);
+      if (activeView === 'monitor') { monitorLoaded = false; return loadMonitor(); }
       return loadRepos();
     };
     const openAddModal = () => {
@@ -2500,7 +2597,7 @@
       loadRepos();
       loadDeployments();
       loadPages();
-      loadMonitor();
+      // 监控不在这里预加载：探测在浏览器端，不该在用户还没打开监控页时就发请求
     }
 
     (async function boot() {
@@ -2516,7 +2613,7 @@
       if (!authGet('access')) { showLogin(''); return; }
       // 已有令牌：先在幕后完成首屏加载（会话失效会在 api() 里 401→弹登录并揭幕）
       await Promise.race([
-        Promise.allSettled([loadRepos(), loadDeployments(), loadPages(), loadMonitor()]),
+        Promise.allSettled([loadRepos(), loadDeployments(), loadPages()]),
         sleep(3500)  // 兜底：数据再慢也不能把用户晾在幕布后
       ]);
       if (!authGet('access')) return;  // 会话失效：登录框已弹出并揭幕

@@ -1,78 +1,44 @@
-// 服务健康监控：由本服务集中轮询各服务的健康接口，前端只读聚合结果。
+// 服务健康监控：探测在浏览器端完成，服务端只提供「要监控谁」的清单。
 //
-// 为什么在后端轮询而不是浏览器直接 fetch：
-// 1) 被监控服务多数只绑回环地址（经 cloudflared 暴露），浏览器跨域访问会被 CORS 拦下；
-// 2) 多个打开的面板会各poll 一份，把上游打出无谓的请求；集中轮询只占用一条采样流；
-// 3) 结果带历史，可算「最近 N 次健康率」，浏览器端刷新就丢历史。
+// 为什么最终选了浏览器直连（而不是服务端轮询）：
+// 1) 没人看的时候天然零流量——不打开监控页就一个请求都不会发，不用额外做
+//    「空闲停机」这类复杂逻辑；
+// 2) 看到的就是「你自己当前的网络能否访问该服务」，比服务器视角更贴近真实体验；
+// 3) 服务端不必为每个目标建立长连接/定时器，也省掉一次公网往返的中转。
 //
-// 目标配置（HEALTH_TARGETS）：逗号分隔，每项 `名称=URL` 或只写 URL（名称取域名）：
-//
-//	HEALTH_TARGETS=jmreader=https://jm.june-t.top/api/schedule,music=https://music.june-t.top/api/health
-//
-// 状态判定：
-//
-//	up     2xx/3xx，或 JSON 里没有「对外关闭」标记
-//	paused 503 或 JSON 中 open=false —— 服务活着但主动暂停（如 JMReader 的工作日时段限制）
-//	down   网络错误/超时/4xx/5xx 其它状态码
+// 代价与应对：
+// 1) 跨域（CORS）：实测本平台多数服务返回 Access-Control-Allow-Origin，但
+//    imgbed / wordrush / music-worker / 本控制台自身不返回。浏览器会拦下读取，
+//    此时无法区分「服务坏了」与「不允许跨域」。前端把这些服务标成「跨域受限」，
+//    并提示可改成同源路径或让对方放行来源——本清单里的 cross_origin 字段给出
+//    服务端预先判定的结果，避免前端把 CORS 失败误报成服务宕机。
+// 2) 历史与可用率：浏览器端没有历史，故不提供「最近 N 次可用率」指标，
+//    只展示当前状态与延迟（不再编造无数据来源的百分比）。
+// 3) 服务端无法在没人看时收集数据，因此不提供「服务端视角」的历史曲线。
+
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 )
 
-const (
-	monitorHistorySize = 60              // 每个目标保留最近 60 次探测
-	monitorTimeout     = 8 * time.Second // 单次探测超时
-	monitorBodyLimit   = 8 << 10         // 只读 8KB 响应体用于解析提示信息
-)
+// monitorProbeTimeout 跨域判定用的单次探测超时
+const monitorProbeTimeout = 8 * time.Second
 
-// monitorTarget 一个被监控的服务
+// monitorTarget 一个被监控的服务；全部字段都是非敏感信息，登录后可读。
 type monitorTarget struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
 	URL  string `json:"url"`
-}
-
-// monitorCheck 一次探测结果
-type monitorCheck struct {
-	At        int64  `json:"at"`
-	State     string `json:"state"`
-	Code      int    `json:"code"`
-	LatencyMS int64  `json:"latency_ms"`
-	Message   string `json:"message"`
-}
-
-// monitorView 给前端的聚合视图
-type monitorView struct {
-	Key       string         `json:"key"`
-	Name      string         `json:"name"`
-	URL       string         `json:"url"`
-	State     string         `json:"state"`
-	Code      int            `json:"code"`
-	LatencyMS int64          `json:"latency_ms"`
-	Message   string         `json:"message"`
-	CheckedAt int64          `json:"checked_at"`
-	Uptime    int            `json:"uptime"` // 最近 N 次中「可用（up+paused）」占比
-	Checks    []monitorCheck `json:"checks"`
-}
-
-// monitor 监控器：后台定时探测，结果只留内存
-type monitor struct {
-	http     *http.Client
-	interval time.Duration
-	targets  []monitorTarget
-
-	mu      sync.RWMutex
-	history map[string][]monitorCheck
+	// CrossOrigin 服务端预先探测过：目标是否回显了允许浏览器跨域读取的头。
+	// false 表示浏览器直接 fetch 会被 CORS 拦下（前端展示为「跨域受限」）。
+	CrossOrigin bool `json:"cross_origin"`
 }
 
 // parseTargets 解析 HEALTH_TARGETS；解析不出的项跳过并记日志
@@ -88,13 +54,18 @@ func parseTargets(raw string) []monitorTarget {
 		if i := strings.Index(part, "="); i > 0 {
 			name, rawURL = strings.TrimSpace(part[:i]), strings.TrimSpace(part[i+1:])
 		}
-		u, err := url.Parse(rawURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			log.Printf("[monitor] 忽略无效目标 %q", part)
-			continue
-		}
-		if name == "" {
-			name = u.Host
+		// 相对路径（如 /api/health）按本页同源请求，无需校验 scheme/host
+		if !isSameOrigin(rawURL) {
+			u, err := url.Parse(rawURL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				log.Printf("[monitor] 忽略无效目标 %q", part)
+				continue
+			}
+			if name == "" {
+				name = u.Host
+			}
+		} else if name == "" {
+			name = strings.Trim(rawURL, "/")
 		}
 		key := strings.ToLower(name)
 		if seen[key] {
@@ -106,184 +77,137 @@ func parseTargets(raw string) []monitorTarget {
 	return out
 }
 
-func newMonitor(targets []monitorTarget, interval time.Duration) *monitor {
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
+// isLoopback 判断地址是否指向本机：本机目标浏览器访问不到，只能由服务端代探。
+func isLoopback(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
 	}
-	return &monitor{
-		http:     &http.Client{Timeout: monitorTimeout},
-		interval: interval,
-		targets:  targets,
-		history:  map[string][]monitorCheck{},
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// loopbackFn 便于测试：默认用 isLoopback，测试里可替换
+// （httptest 服务跑在 127.0.0.1，若不做替换会被「回环不可直连」规则短路）
+var loopbackFn = isLoopback
+
+// isSameOrigin 判断目标是否为相对路径（如 /api/health）。
+// 相对路径由浏览器按本页同源请求，不存在 CORS 问题，也不需要服务端预判。
+func isSameOrigin(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	return strings.HasPrefix(rawURL, "/")
+}
+
+// probeCORS 由服务端代浏览器发一次带 Origin 的 GET，看对方是否回显了
+// Access-Control-Allow-Origin。带 Origin 时对方若不做处理，浏览器就会拦读取。
+func (s *server) probeCORS(ctx context.Context, target string) bool {
+	if isSameOrigin(target) {
+		return true // 同源相对路径：浏览器可直接读取
+	}
+	if _, err := url.Parse(target); err != nil {
+		return false
+	}
+	if loopbackFn(target) {
+		return false // 浏览器够不到本机地址，必然只能算跨域受限
+	}
+	ctx, cancel := context.WithTimeout(ctx, monitorProbeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	// Origin 用本控制台自身的对外地址：与真实浏览器从该页面发起时一致
+	req.Header.Set("Origin", s.selfOrigin())
+	req.Header.Set("User-Agent", "cicd-console-cors-probe/1")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+
+	resp, err := s.monHTTP.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	acao := resp.Header.Get("Access-Control-Allow-Origin")
+	if acao == "" {
+		return false
+	}
+	return acao == "*" || strings.EqualFold(strings.TrimRight(acao, "/"), s.selfOrigin())
+}
+
+// selfOrigin 本控制台对外访问来源（浏览器发起探测时的 Origin）。
+// 由 PUBLIC_ORIGIN 覆盖；未配置时按请求 Host 推断，最终兜底为 *。
+func (s *server) selfOrigin() string {
+	if v := strings.TrimSpace(s.cfg.PublicOrigin); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "*"
+}
+
+// refreshCrossOrigin 启动时与服务定时刷新时，标记每个目标浏览器能否直连。
+func (s *server) refreshCrossOrigin() {
+	if len(s.cfg.HealthTargets) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), monitorProbeTimeout+5*time.Second)
+	defer cancel()
+	for i := range s.cfg.HealthTargets {
+		t := s.cfg.HealthTargets[i]
+		// 同源相对路径天然可读，无需探测
+		if isSameOrigin(t.URL) {
+			t.CrossOrigin = true
+			s.cfg.HealthTargets[i] = t
+			continue
+		}
+		if loopbackFn(t.URL) {
+			continue
+		}
+		if s.probeCORS(ctx, t.URL) {
+			t.CrossOrigin = true
+			s.cfg.HealthTargets[i] = t
+		}
 	}
 }
 
-// start 启动后台轮询（立即探测一次，之后按间隔）
-func (m *monitor) start() {
-	if len(m.targets) == 0 {
+// startCORSRefresh 定时刷新跨域判定（服务上线/改配置后无需重启控制台）
+func (s *server) startCORSRefresh() {
+	if len(s.cfg.HealthTargets) == 0 {
 		return
 	}
 	go func() {
-		m.checkAll(context.Background())
-		t := time.NewTicker(m.interval)
+		s.refreshCrossOrigin()
+		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
 		for range t.C {
-			m.checkAll(context.Background())
+			s.refreshCrossOrigin()
 		}
 	}()
 }
 
-// checkAll 并发探测全部目标
-func (m *monitor) checkAll(ctx context.Context) {
-	var wg sync.WaitGroup
-	for _, t := range m.targets {
-		wg.Add(1)
-		go func(t monitorTarget) {
-			defer wg.Done()
-			res := m.probe(ctx, t.URL)
-			m.mu.Lock()
-			h := append(m.history[t.Key], res)
-			if len(h) > monitorHistorySize {
-				h = h[len(h)-monitorHistorySize:]
-			}
-			m.history[t.Key] = h
-			m.mu.Unlock()
-		}(t)
-	}
-	wg.Wait()
-}
-
-// probe 请求一次并归类状态
-func (m *monitor) probe(ctx context.Context, target string) monitorCheck {
-	ctx, cancel := context.WithTimeout(ctx, monitorTimeout)
-	defer cancel()
-	start := time.Now()
-	res := monitorCheck{At: start.Unix(), State: "down"}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		res.Message = err.Error()
-		return res
-	}
-	req.Header.Set("User-Agent", "cicd-console-monitor/1")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := m.http.Do(req)
-	res.LatencyMS = time.Since(start).Milliseconds()
-	if err != nil {
-		res.Message = err.Error()
-		return res
-	}
-	defer resp.Body.Close()
-	res.Code = resp.StatusCode
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, monitorBodyLimit))
-	state, msg := classifyHealth(resp.StatusCode, body)
-	res.State = state
-	res.Message = msg
-	return res
-}
-
-// classifyHealth 依据状态码与响应体判定状态。
-// 额外识别「服务活着但主动暂停」：JMReader 的 /api/schedule 在封锁时段返回
-// open=false（HTTP 仍 200），其余受限接口返回 503。
-func classifyHealth(code int, body []byte) (string, string) {
-	var payload struct {
-		Detail string `json:"detail"`
-		Reason string `json:"reason"`
-		Error  string `json:"error"`
-		Open   *bool  `json:"open"`
-		OK     *bool  `json:"ok"`
-	}
-	parsed := json.Unmarshal(body, &payload) == nil
-
-	note := ""
-	if parsed {
-		switch {
-		case payload.Reason != "":
-			note = payload.Reason
-		case payload.Detail != "":
-			note = payload.Detail
-		case payload.Error != "":
-			note = payload.Error
-		}
-	}
-
-	switch {
-	case code >= 200 && code < 400:
-		if parsed && payload.Open != nil && !*payload.Open {
-			return "paused", firstNonEmpty(note, "服务暂停开放")
-		}
-		if parsed && payload.OK != nil && !*payload.OK {
-			return "down", firstNonEmpty(note, "服务上报异常")
-		}
-		return "up", note
-	case code == http.StatusServiceUnavailable:
-		// 503 在多数服务里表示「上游不可用」，但在本平台也用于「主动暂停」，
-		// 两者都算服务进程活着：状态记为 paused，由文案区分。
-		return "paused", firstNonEmpty(note, "服务不可用（503）")
-	default:
-		return "down", firstNonEmpty(note, fmt.Sprintf("HTTP %d", code))
-	}
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if strings.TrimSpace(v) != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-// views 生成聚合视图（newest 在前，checks 由旧到新）
-func (m *monitor) views() []monitorView {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	out := make([]monitorView, 0, len(m.targets))
-	for _, t := range m.targets {
-		h := m.history[t.Key]
-		v := monitorView{Key: t.Key, Name: t.Name, URL: t.URL, State: "unknown", Checks: h}
-		if len(h) > 0 {
-			last := h[len(h)-1]
-			v.State = last.State
-			v.Code = last.Code
-			v.LatencyMS = last.LatencyMS
-			v.Message = last.Message
-			v.CheckedAt = last.At
-			alive := 0
-			for _, c := range h {
-				if c.State == "up" || c.State == "paused" {
-					alive++
-				}
-			}
-			v.Uptime = alive * 100 / len(h)
-		}
-		out = append(out, v)
-	}
-	return out
-}
-
-// handleMonitor 监控数据。默认返回缓存结果；force=1 时同步再探测一次（最多约 8s）。
+// handleMonitor 返回监控目标清单。探测本身由浏览器完成（见文件头说明），
+// 服务端只负责「监控谁」与「浏览器能否直连」这两件必须站外判定的事。
 func (s *server) handleMonitor(w http.ResponseWriter, r *http.Request) {
-	if s.mon == nil {
+	targets := s.cfg.HealthTargets
+	if len(targets) == 0 {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"configured": false,
-			"interval":   0,
-			"targets":    []monitorView{},
+			"configured":       false,
+			"client_side":      true,
+			"public_origin":    s.selfOrigin(),
+			"refresh_interval": 15,
+			"targets":          []monitorTarget{},
 		})
 		return
 	}
-	if r.URL.Query().Get("force") == "1" {
-		ctx, cancel := context.WithTimeout(r.Context(), monitorTimeout+4*time.Second)
-		defer cancel()
-		s.mon.checkAll(ctx)
-	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"configured": true,
-		"interval":   int(s.mon.interval.Seconds()),
-		"targets":    s.mon.views(),
-		"history":    monitorHistorySize,
+		"configured":       true,
+		"client_side":      true, // 前端据此走浏览器直连，不走服务端轮询
+		"public_origin":    s.selfOrigin(),
+		"refresh_interval": 15, // 前端停留本页时的探测间隔（秒）
+		"targets":          targets,
 	})
 }

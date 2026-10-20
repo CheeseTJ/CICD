@@ -29,8 +29,8 @@ type config struct {
 	CFAccountID      string          // 可选：Cloudflare 账号 ID
 	CFProjects       []string        // 可选：只展示这些 Pages 项目，空表示全部
 	CFWorkerSites    []string        // 显式标识：哪些 Worker 是前端静态站（如 remind-web），空表示不展示 Workers 站点
-	HealthTargets    []monitorTarget // 可选：被监控服务的健康地址（HEALTH_TARGETS）
-	MonitorInterval  time.Duration   // 健康探测间隔（MONITOR_INTERVAL，默认 30s）
+	HealthTargets    []monitorTarget // 可选：被监控服务的健康地址（HEALTH_TARGETS），探测在浏览器端完成
+	PublicOrigin     string          // 可选：本控制台对外地址（PUBLIC_ORIGIN），跨域判定时用作 Origin
 	Auth             authConfig      // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
 }
 
@@ -47,7 +47,7 @@ func loadConfig() *config {
 		CFProjects:       splitCSV(os.Getenv("CF_PAGES_PROJECTS")),
 		CFWorkerSites:    splitCSV(os.Getenv("CF_WORKERS_SITES")),
 		HealthTargets:    parseTargets(os.Getenv("HEALTH_TARGETS")),
-		MonitorInterval:  getenvDuration("MONITOR_INTERVAL", 30*time.Second),
+		PublicOrigin:     os.Getenv("PUBLIC_ORIGIN"),
 		Auth: authConfig{
 			UserCenterURL: os.Getenv("USER_CENTER_URL"),
 			App:           getenv("USER_CENTER_APP", "cicd"),
@@ -84,13 +84,13 @@ func getenvDuration(k string, def time.Duration) time.Duration {
 }
 
 type server struct {
-	cfg   *config
-	store *Store
-	gh    *githubClient
-	pgyer *pgyerClient
-	cf    *cloudflareClient
-	auth  *authenticator
-	mon   *monitor // 服务健康监控（HEALTH_TARGETS 为空时仍创建，但无目标）
+	cfg     *config
+	store   *Store
+	gh      *githubClient
+	pgyer   *pgyerClient
+	cf      *cloudflareClient
+	auth    *authenticator
+	monHTTP *http.Client // 仅用于判定「目标是否允许浏览器跨域读取」，非探测轮询
 
 	syncMu  sync.Mutex
 	syncing map[string]bool
@@ -155,7 +155,7 @@ func main() {
 		pgyer:   &pgyerClient{http: newHTTPClient(), apiKey: cfg.PGYERKey},
 		cf:      &cloudflareClient{http: newHTTPClient(), token: cfg.CFToken, accountID: cfg.CFAccountID, projects: cfg.CFProjects, workerSites: cfg.CFWorkerSites},
 		auth:    newAuthenticator(cfg.Auth, newHTTPClient()),
-		mon:     newMonitor(cfg.HealthTargets, cfg.MonitorInterval),
+		monHTTP: &http.Client{Timeout: monitorProbeTimeout},
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 	}
@@ -175,9 +175,11 @@ func main() {
 	mux.HandleFunc("/api/monitor", s.auth.wrap(s.handleMonitor))
 
 	s.startAutoSync()
-	s.mon.start()
+	// 健康监控的探测在浏览器端完成，服务端只在启动/定时刷新时判定各目标是否
+	// 允许跨域读取（结果随 /api/monitor 下发），不做任何定时探测。
+	s.startCORSRefresh()
 	if n := len(cfg.HealthTargets); n > 0 {
-		log.Printf("健康监控已启用：%d 个目标，间隔 %s", n, cfg.MonitorInterval)
+		log.Printf("健康监控已就绪：%d 个目标，由浏览器直连探测（打开监控页才发请求）", n)
 	}
 
 	addr := ":" + cfg.Port
@@ -232,7 +234,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	out["cloudflare_account_id"] = s.cfg.CFAccountID != ""
 	out["cf_pages_projects"] = strings.Join(s.cfg.CFProjects, ",")
 	out["monitor_targets"] = len(s.cfg.HealthTargets)
-	out["monitor_interval"] = s.cfg.MonitorInterval.String()
+	out["monitor_mode"] = "client-side"
 	writeJSON(w, http.StatusOK, out)
 }
 
