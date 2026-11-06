@@ -509,20 +509,30 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
-			// 优先取 deployments（含 source，如 wrangler/api）；失败则退回 versions
-			deps, dErr := s.cf.listWorkerDeployments(c, sc.ID, perProject)
-			if dErr != nil {
-				log.Printf("读取 Worker 部署记录失败 %s: %v", sc.ID, dErr)
+			// 优先取 CF 侧构建记录（含构建中/失败态）。
+			// 未连接 GitHub 仓库时返回空数组，静默降级到 deployments。
+			builds, bErr := s.cf.listWorkerBuilds(c, sc.ID, perProject)
+			if bErr != nil {
+				log.Printf("读取 Worker 构建记录失败 %s: %v", sc.ID, bErr)
 			}
+
+			var deps []cfWorkerDeployment
 			var versions []cfWorkerVersion
-			if len(deps) == 0 {
-				var vErr error
-				versions, vErr = s.cf.listWorkerVersions(c, sc.ID, perProject)
-				if vErr != nil {
-					log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, vErr)
+			if len(builds) == 0 {
+				var dErr error
+				deps, dErr = s.cf.listWorkerDeployments(c, sc.ID, perProject)
+				if dErr != nil {
+					log.Printf("读取 Worker 部署记录失败 %s: %v", sc.ID, dErr)
+				}
+				if len(deps) == 0 {
+					var vErr error
+					versions, vErr = s.cf.listWorkerVersions(c, sc.ID, perProject)
+					if vErr != nil {
+						log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, vErr)
+					}
 				}
 			}
-			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, deps, s.cf.accountID, repoNames)
+			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, deps, builds, s.cf.accountID, repoNames)
 		}(i, sc)
 	}
 	wg.Wait()
