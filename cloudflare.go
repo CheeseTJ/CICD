@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +22,10 @@ type cloudflareClient struct {
 	accountID   string   // CLOUDFLARE_ACCOUNT_ID
 	projects    []string // 可选白名单（CF_PAGES_PROJECTS），为空表示展示全部 Pages 项目
 	workerSites []string // 显式标识（CF_WORKERS_SITES）：哪些 Worker 是前端静态站，为空则不展示 Workers 站点
+
+	// buildsUnavailable 一旦探测到 token 缺 Workers Builds 权限就置 true，
+	// 后续调用直接降级，不再对每个站点重复打 401 请求。
+	buildsUnavailable atomic.Bool
 }
 
 func (c *cloudflareClient) ready() bool {
@@ -31,6 +38,21 @@ type cfAPIError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
+// cfHTTPError 保留 HTTP 状态码与 CF 错误码，便于上层区分「权限不足」与「真故障」。
+type cfHTTPError struct {
+	Status  int
+	Code    int
+	Message string
+}
+
+func (e *cfHTTPError) Error() string {
+	if e.Code != 0 {
+		return fmt.Sprintf("Cloudflare API 错误(%d/%d): %s", e.Status, e.Code, e.Message)
+	}
+	return fmt.Sprintf("Cloudflare API 错误(%d): %s", e.Status, e.Message)
+}
+
 
 // get 发起一次 GET 请求，并把 envelope 里的 result 解到 out。
 func (c *cloudflareClient) get(ctx context.Context, path string, query map[string]string, out interface{}) error {
@@ -67,11 +89,12 @@ func (c *cloudflareClient) get(ctx context.Context, path string, query map[strin
 		return fmt.Errorf("Cloudflare 响应解析失败: %w", err)
 	}
 	if !env.Success {
-		msg := resp.Status
+		he := &cfHTTPError{Status: resp.StatusCode, Message: resp.Status}
 		if len(env.Errors) > 0 {
-			msg = env.Errors[0].Message
+			he.Code = env.Errors[0].Code
+			he.Message = env.Errors[0].Message
 		}
-		return fmt.Errorf("Cloudflare API 错误: %s", msg)
+		return he
 	}
 	if out == nil {
 		return nil
@@ -335,6 +358,78 @@ func (c *cloudflareClient) getWorkerSubdomain(ctx context.Context) (string, erro
 	return out.Subdomain, err
 }
 
+/* ---------- Workers Builds（CF 侧构建） ----------
+ *
+ * Pages 迁移到 Workers 后，若继续由 Cloudflare 监听 GitHub push 自动构建，
+ * 部署记录走 Workers Builds API：
+ *
+ *   GET /accounts/<id>/builds/workers/<script>/builds
+ *
+ * 与 Pages 不同，这条链路需要独立的 Workers Builds:Read 权限，且是**新的**
+ * token 权限项。旧 token 未授权时返回 401（code 12006 Invalid token）。
+ *
+ * 因此这里按「能力探测」处理：首次 401 即标记 unavailable，整个进程生命周期
+ * 不再重试，调用方降级到 Workers Versions API（只反映"已部署成功"的版本，
+ * 没有构建中的状态）。权限补齐后重启服务即可自动启用，无需改代码。
+ */
+
+var errWorkersBuildsUnavailable = errors.New("当前 token 缺少 Workers Builds:Read 权限")
+
+type cfWorkerBuild struct {
+	ID        string `json:"id"`
+	CreatedOn string `json:"created_on"`
+	UpdatedOn string `json:"updated_on"`
+	Status    string `json:"status"` // queued | running | success | failure | canceled
+	// 构建的触发来源，GitHub 集成时 type=github
+	Trigger struct {
+		Type     string `json:"type"`
+		Metadata struct {
+			Branch        string `json:"branch"`
+			CommitHash    string `json:"commit_hash"`
+			CommitMessage string `json:"commit_message"`
+		} `json:"metadata"`
+	} `json:"trigger"`
+}
+
+// listWorkerBuilds 取某个 Worker 的最近构建（新→旧）。
+// 权限不足时返回 errWorkersBuildsUnavailable，调用方据此降级。
+func (c *cloudflareClient) listWorkerBuilds(ctx context.Context, script string, limit int) ([]cfWorkerBuild, error) {
+	if c.buildsUnavailable.Load() {
+		return nil, errWorkersBuildsUnavailable
+	}
+	query := map[string]string{}
+	if limit > 0 {
+		query["per_page"] = strconv.Itoa(limit)
+	}
+	var resp []cfWorkerBuild
+	err := c.get(ctx, "/accounts/"+c.accountID+"/builds/workers/"+url.PathEscape(script)+"/builds", query, &resp)
+	if err != nil {
+		// 401/403 视为权限缺失，打标记后全程降级，避免每个站点都打一次日志
+		if isAuthError(err) {
+			if c.buildsUnavailable.CompareAndSwap(false, true) {
+				log.Printf("Workers Builds 不可用（token 缺 Workers Builds:Read），" +
+					"部署记录降级为 Workers Versions API")
+			}
+			return nil, errWorkersBuildsUnavailable
+		}
+		return nil, err
+	}
+	return resp, nil
+}
+
+// isAuthError 判断 CF API 错误是否为鉴权类（401/403 / code 12006）。
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *cfHTTPError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden ||
+			ae.Code == 12006 || ae.Code == 10000
+	}
+	return false
+}
+
 type cfWorkerVersion struct {
 	ID     string `json:"id"`
 	Number int64  `json:"number"`
@@ -359,7 +454,10 @@ func (c *cloudflareClient) listWorkerVersions(ctx context.Context, script string
 }
 
 // buildWorkerProjectView 把 Workers 静态站转成与 Pages 相同的视图，前端复用一套渲染。
-func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, accountID string, repoNames map[string]string) pagesProjectView {
+//
+// builds 非空时优先用 Workers Builds 的记录（含构建中/失败等完整状态）；
+// 为空（token 缺 Workers Builds:Read）则退回 versions（只有成功的部署）。
+func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, builds []cfWorkerBuild, accountID string, repoNames map[string]string) pagesProjectView {
 	v := pagesProjectView{
 		Name:         w.ID,
 		DisplayName:  lookupRepoDisplayName(repoNames, w.ID),
@@ -383,22 +481,28 @@ func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomai
 		v.SiteURL = "https://" + v.Subdomain
 	}
 
-	for _, ver := range versions {
-		vm := pagesDeploymentView{
-			ID:          ver.ID,
-			Environment: "production",
-			// 版本存在即部署成功；Workers 没有独立 build 阶段，stage 记为 deploy
-			Status:    "success",
-			Stage:     "deploy",
-			CreatedOn: ver.Metadata.CreatedOn,
+	if len(builds) > 0 {
+		for _, b := range builds {
+			v.Recent = append(v.Recent, toWorkerBuildView(b))
 		}
-		// 版本号即部署 ID 前缀，可当作短标识；commit 对应关系由 Actions 页承担，这里留空
-		if len(ver.ID) > 8 {
-			vm.CommitShort = ver.ID[:8]
-		} else {
-			vm.CommitShort = ver.ID
+	} else {
+		for _, ver := range versions {
+			vm := pagesDeploymentView{
+				ID:          ver.ID,
+				Environment: "production",
+				// 版本存在即部署成功；Workers 没有独立 build 阶段，stage 记为 deploy
+				Status:    "success",
+				Stage:     "deploy",
+				CreatedOn: ver.Metadata.CreatedOn,
+			}
+			// 版本号即部署 ID 前缀，可当作短标识；commit 对应关系由 Actions 页承担，这里留空
+			if len(ver.ID) > 8 {
+				vm.CommitShort = ver.ID[:8]
+			} else {
+				vm.CommitShort = ver.ID
+			}
+			v.Recent = append(v.Recent, vm)
 		}
-		v.Recent = append(v.Recent, vm)
 	}
 	if len(v.Recent) > 0 {
 		latest := v.Recent[0]
@@ -406,3 +510,58 @@ func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomai
 	}
 	return v
 }
+
+// toWorkerBuildView 把 Workers Builds 记录转成通用部署视图。
+func toWorkerBuildView(b cfWorkerBuild) pagesDeploymentView {
+	vm := pagesDeploymentView{
+		ID:            b.ID,
+		Environment:   "production",
+		Status:        workerBuildStatus(b.Status),
+		Stage:         "build",
+		Branch:        b.Trigger.Metadata.Branch,
+		CommitHash:    b.Trigger.Metadata.CommitHash,
+		CommitMessage: b.Trigger.Metadata.CommitMessage,
+		TriggerType:   b.Trigger.Type,
+		CreatedOn:     b.CreatedOn,
+	}
+	if len(vm.CommitHash) >= 7 {
+		vm.CommitShort = vm.CommitHash[:7]
+	} else {
+		vm.CommitShort = vm.CommitHash
+	}
+	if len(vm.ID) > 8 {
+		vm.ShortID = vm.ID[:8]
+	} else {
+		vm.ShortID = vm.ID
+	}
+	start, okStart := parseRFC3339(b.CreatedOn)
+	end, okEnd := parseRFC3339(b.UpdatedOn)
+	if okStart && okEnd && end.After(start) {
+		vm.DurationSec = int64(end.Sub(start).Seconds())
+	}
+	return vm
+}
+
+// workerBuildStatus 把 Workers Builds 的状态映射为前端已支持的运行态。
+func workerBuildStatus(s string) string {
+	switch strings.ToLower(s) {
+	case "success", "succeeded":
+		return "success"
+	case "failure", "failed":
+		return "failure"
+	case "canceled", "cancelled":
+		return "cancelled"
+	case "running", "active":
+		return "in_progress"
+	case "queued", "pending":
+		return "queued"
+	case "skipped":
+		return "skipped"
+	default:
+		if s == "" {
+			return "queued"
+		}
+		return strings.ToLower(s)
+	}
+}
+

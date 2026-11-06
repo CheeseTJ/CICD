@@ -332,15 +332,19 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	wg.Wait()
-
-	// Workers 静态托管（如 remind-web）：不在 Pages API 里，单独拉取后合并进同一列表。
+	// Workers 静态托管：在 Pages 之后拉取，并按「同名覆盖」合并。
+	//
+	// 迁移期语义：同一个站点在迁移过程中会同时存在于 Pages 和 Workers（先建好
+	// Worker、验证通过再删 Pages）。此时以 Worker 为准 —— 它是迁移的目标形态，
+	// 也是未来唯一存在的形态。等 Pages 项目删除后，这条覆盖逻辑自然失效，
+	// 无需再改代码。
+	//
 	// 部分失败（权限不足/单个 Worker 读取失败）只降级不阻断，Pages 数据照常返回。
 	workerViews, err := s.listWorkerSiteViews(ctx, perProject, repoNames)
 	if err != nil {
 		log.Printf("读取 Workers 静态站点失败（Token 需要 Workers Scripts:Read）: %v", err)
 	}
-	views = append(views, workerViews...)
+	views = mergeWorkerOverPages(views, workerViews)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"configured": true,
@@ -349,33 +353,83 @@ func (s *server) handlePages(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mergeWorkerOverPages 合并 Pages 与 Worker 站点视图，Worker 优先。
+//
+// 判定「同一个站点」的依据是自定义域名（忽略大小写）：迁移期间 Pages 项目
+// (如 jmreader) 与 Worker 脚本 (如 jmreader) 名字可能不同，但绑定的自定义域
+// 一定相同，用它做键最稳。没有自定义域的站点退化为按脚本名比对。
+func mergeWorkerOverPages(pagesViews, workerViews []pagesProjectView) []pagesProjectView {
+	if len(workerViews) == 0 {
+		return pagesViews
+	}
+	// 键 → Worker 视图
+	byKey := make(map[string]pagesProjectView, len(workerViews))
+	for _, w := range workerViews {
+		for _, k := range siteKeys(w) {
+			byKey[k] = w
+		}
+	}
+
+	out := make([]pagesProjectView, 0, len(pagesViews)+len(workerViews))
+	used := make(map[string]bool, len(workerViews))
+	for _, p := range pagesViews {
+		replaced := false
+		for _, k := range siteKeys(p) {
+			if w, ok := byKey[k]; ok {
+				out = append(out, w)
+				used[k] = true
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, p)
+		}
+	}
+	// 补上 Pages 里没有对应项的 Worker（纯新增站点）
+	for _, w := range workerViews {
+		seen := false
+		for _, k := range siteKeys(w) {
+			if used[k] {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// siteKeys 返回一个站点可能被匹配的键：自定义域优先，最后兜底脚本/项目名。
+// 全部小写化，避免 Cloudflare 侧名称大小写不一致导致漏配。
+func siteKeys(v pagesProjectView) []string {
+	keys := make([]string, 0, len(v.CustomDomains)+1)
+	for _, d := range v.CustomDomains {
+		if d != "" {
+			keys = append(keys, "host:"+strings.ToLower(d))
+		}
+	}
+	if v.Name != "" {
+		keys = append(keys, "name:"+strings.ToLower(v.Name))
+	}
+	return keys
+}
+
 // listWorkerSiteViews 拉取指定为前端静态站的 Worker（白名单 CF_WORKERS_SITES），
 // 转成与 Pages 相同的视图。
 //
 // 为什么用显式白名单而不是自动识别：Workers API 不暴露「是否托管静态资产」，
 // settings 里既没有 assets 标记、bindings 为空也无法区分纯静态站与无绑定的
 // 代理型 Worker（实测 2026-09）。与其靠特征猜测，不如由配置显式声明。
+//
+// 白名单为空时退化为「自动推断」：把绑定了自定义域的 Worker 全部当静态站候选。
+// 这条兜底只在迁移完成、CF_WORKERS_SITES 忘记维护时才生效，避免站点从列表里消失。
 func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNames map[string]string) ([]pagesProjectView, error) {
-	if len(s.cf.workerSites) == 0 {
-		return nil, nil
-	}
-	keep := make(map[string]bool, len(s.cf.workerSites))
-	for _, name := range s.cf.workerSites {
-		keep[name] = true
-	}
-
 	scripts, err := s.cf.listWorkerScripts(ctx)
 	if err != nil {
 		return nil, err
-	}
-	var statics []cfWorkerScript
-	for _, sc := range scripts {
-		if keep[sc.ID] {
-			statics = append(statics, sc)
-		}
-	}
-	if len(statics) == 0 {
-		return nil, nil
 	}
 
 	// 自定义域一次拉全，按 service（script 名）分组
@@ -384,6 +438,36 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 		log.Printf("读取 Workers 自定义域失败: %v", err)
 		domains = nil
 	}
+	domainByService := make(map[string][]string, len(domains))
+	for _, d := range domains {
+		domainByService[d.Service] = append(domainByService[d.Service], d.Hostname)
+	}
+
+	var statics []cfWorkerScript
+	if len(s.cf.workerSites) > 0 {
+		keep := make(map[string]bool, len(s.cf.workerSites))
+		for _, name := range s.cf.workerSites {
+			keep[strings.ToLower(name)] = true
+		}
+		for _, sc := range scripts {
+			if keep[strings.ToLower(sc.ID)] {
+				statics = append(statics, sc)
+			}
+		}
+	} else {
+		// 白名单未配置：只把「有自定义域」的 Worker 纳入，避免音乐/用户中心这类
+		// 纯 API Worker（虽然也有自定义域）以外的东西混进来。API 型 Worker 若要
+		// 排除，请显式配置 CF_WORKERS_SITES。
+		for _, sc := range scripts {
+			if len(domainByService[sc.ID]) > 0 {
+				statics = append(statics, sc)
+			}
+		}
+	}
+	if len(statics) == 0 {
+		return nil, nil
+	}
+
 	subdomain, err := s.cf.getWorkerSubdomain(ctx)
 	if err != nil {
 		subdomain = "" // workers.dev 子域缺失不致命（多数站点用自定义域）
@@ -400,16 +484,24 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 			defer func() { <-sem }()
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
-			versions, err := s.cf.listWorkerVersions(c, sc.ID, perProject)
-			if err != nil {
-				log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, err)
+
+			// 优先取 Workers Builds（含构建中/失败）；权限不足则降级到 versions
+			builds, bErr := s.cf.listWorkerBuilds(c, sc.ID, perProject)
+			var versions []cfWorkerVersion
+			if bErr != nil {
+				var vErr error
+				versions, vErr = s.cf.listWorkerVersions(c, sc.ID, perProject)
+				if vErr != nil {
+					log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, vErr)
+				}
 			}
-			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, s.cf.accountID, repoNames)
+			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, builds, s.cf.accountID, repoNames)
 		}(i, sc)
 	}
 	wg.Wait()
 	return views, nil
 }
+
 
 func (s *server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
