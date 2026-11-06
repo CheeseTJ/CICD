@@ -42,7 +42,7 @@ func TestIsLoopback(t *testing.T) {
 		"http://localhost:8090/":       true,
 		"http://[::1]:8080/health":     true,
 		"https://jm.example.com/":      false,
-		"https://10.0.0.5/health":      false, // 内网地址仍算非回环：浏览器可能够不到，
+		"https://192.168.1.10/health":  false, // 内网地址仍算非回环：浏览器可能够不到，
 		// 但这里只回答「是不是本机」，由跨域探测自行判定
 	}
 	for u, want := range cases {
