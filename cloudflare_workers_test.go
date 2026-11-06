@@ -85,23 +85,26 @@ func TestMergeWorkerOverPages_EmptyWorkersKeepsPages(t *testing.T) {
 	}
 }
 
-// Worker Builds 状态到前端运行态的映射。
-func TestWorkerBuildStatus(t *testing.T) {
-	cases := map[string]string{
-		"success":   "success",
-		"SUCCESS":   "success",
-		"failure":   "failure",
-		"failed":    "failure",
-		"running":   "in_progress",
-		"queued":    "queued",
-		"canceled":  "cancelled",
-		"skipped":   "skipped",
-		"":          "queued",
-		"weird_new": "weird_new",
+// Worker deployment 记录到通用视图的转换。
+func TestToWorkerDeploymentView(t *testing.T) {
+	d := cfWorkerDeployment{
+		ID:        "db6c30b3-236b-473e-a606-9ebe655aea8c",
+		CreatedOn: "2026-09-28T09:38:44Z",
+		Source:    "wrangler",
+		Strategy:  "percentage",
 	}
-	for in, want := range cases {
-		if got := workerBuildStatus(in); got != want {
-			t.Errorf("workerBuildStatus(%q) = %q, want %q", in, got, want)
-		}
+	got := toWorkerDeploymentView(d)
+
+	if got.Status != "success" {
+		t.Errorf("deployment 存在即已上线，status 应为 success，实际 %q", got.Status)
+	}
+	if got.TriggerType != "wrangler" {
+		t.Errorf("trigger_type 应记录来源 wrangler，实际 %q", got.TriggerType)
+	}
+	if got.ShortID != "db6c30b3" {
+		t.Errorf("short_id 应为前 8 位，实际 %q", got.ShortID)
+	}
+	if got.CreatedOn != "2026-09-28T09:38:44Z" {
+		t.Errorf("created_on 应透传，实际 %q", got.CreatedOn)
 	}
 }

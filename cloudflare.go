@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -21,11 +18,7 @@ type cloudflareClient struct {
 	token       string   // CLOUDFLARE_API_TOKEN（Pages:Read + Workers Scripts:Read）
 	accountID   string   // CLOUDFLARE_ACCOUNT_ID
 	projects    []string // 可选白名单（CF_PAGES_PROJECTS），为空表示展示全部 Pages 项目
-	workerSites []string // 显式标识（CF_WORKERS_SITES）：哪些 Worker 是前端静态站，为空则不展示 Workers 站点
-
-	// buildsUnavailable 一旦探测到 token 缺 Workers Builds 权限就置 true，
-	// 后续调用直接降级，不再对每个站点重复打 401 请求。
-	buildsUnavailable atomic.Bool
+	workerSites []string // 可选强制包含名单（CF_WORKERS_SITES）；静态站默认由 has_assets 自动识别
 }
 
 func (c *cloudflareClient) ready() bool {
@@ -358,76 +351,103 @@ func (c *cloudflareClient) getWorkerSubdomain(ctx context.Context) (string, erro
 	return out.Subdomain, err
 }
 
-/* ---------- Workers Builds（CF 侧构建） ----------
+/* ---------- Workers 服务详情（用于识别静态托管） ----------
  *
- * Pages 迁移到 Workers 后，若继续由 Cloudflare 监听 GitHub push 自动构建，
- * 部署记录走 Workers Builds API：
+ * GET /accounts/<id>/workers/services/<name> 返回的 script 里有 has_assets 字段，
+ * 这是「该 Worker 是否托管静态资产」的官方标志：
  *
- *   GET /accounts/<id>/builds/workers/<script>/builds
+ *   music-worker  has_assets=false  纯 API Worker
+ *   user-center   has_assets=false  纯 API Worker
+ *   remind-web    has_assets=true   静态站点（Workers Static Assets）
  *
- * 与 Pages 不同，这条链路需要独立的 Workers Builds:Read 权限，且是**新的**
- * token 权限项。旧 token 未授权时返回 401（code 12006 Invalid token）。
- *
- * 因此这里按「能力探测」处理：首次 401 即标记 unavailable，整个进程生命周期
- * 不再重试，调用方降级到 Workers Versions API（只反映"已部署成功"的版本，
- * 没有构建中的状态）。权限补齐后重启服务即可自动启用，无需改代码。
+ * 实测 2026-11-06。有了它就不必再靠 CF_WORKERS_SITES 白名单人工声明。
  */
 
-var errWorkersBuildsUnavailable = errors.New("当前 token 缺少 Workers Builds:Read 权限")
-
-type cfWorkerBuild struct {
-	ID        string `json:"id"`
-	CreatedOn string `json:"created_on"`
-	UpdatedOn string `json:"updated_on"`
-	Status    string `json:"status"` // queued | running | success | failure | canceled
-	// 构建的触发来源，GitHub 集成时 type=github
-	Trigger struct {
-		Type     string `json:"type"`
-		Metadata struct {
-			Branch        string `json:"branch"`
-			CommitHash    string `json:"commit_hash"`
-			CommitMessage string `json:"commit_message"`
-		} `json:"metadata"`
-	} `json:"trigger"`
+type cfWorkerServiceDetail struct {
+	DefaultEnvironment struct {
+		Script struct {
+			ID                 string `json:"id"`
+			HasAssets          bool   `json:"has_assets"`
+			LastDeployedFrom   string `json:"last_deployed_from"`
+			CompatibilityDate  string `json:"compatibility_date"`
+		} `json:"script"`
+	} `json:"default_environment"`
 }
 
-// listWorkerBuilds 取某个 Worker 的最近构建（新→旧）。
-// 权限不足时返回 errWorkersBuildsUnavailable，调用方据此降级。
-func (c *cloudflareClient) listWorkerBuilds(ctx context.Context, script string, limit int) ([]cfWorkerBuild, error) {
-	if c.buildsUnavailable.Load() {
-		return nil, errWorkersBuildsUnavailable
+// getWorkerService 取单个 Worker 的服务详情（含 has_assets）。
+func (c *cloudflareClient) getWorkerService(ctx context.Context, script string) (*cfWorkerServiceDetail, error) {
+	var out cfWorkerServiceDetail
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/services/"+url.PathEscape(script), nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+/* ---------- Workers Builds（CF 侧构建） ----------
+ *
+ * ⚠️ 重要结论（实测 2026-11-06）：Workers Builds 目前**没有对 API Token 开放的
+ * REST 端点**。以下路径全部返回 401 code 12006「Invalid token」：
+ *
+ *   GET /accounts/<id>/builds/workers
+ *   GET /accounts/<id>/builds
+ *   GET /accounts/<id>/builds/workers/<script>/builds
+ *
+ * 同时 `/accounts/<id>/workers/builds_config` 返回 404 code 10404
+ * 「No route for that URI」，可确认该 API 未公开。
+ *
+ * 这个 401 与「权限不足」无关——同一 token 访问 r2/buckets、billing/profile、
+ * workers/scripts 等全部 200，即使给 token 授予 account 级全部 286+ 权限项，
+ * builds/* 仍然 401。它是内部/未发布 API，要靠 Cloudflare 后续开放。
+ *
+ * 因此采集侧不依赖 Workers Builds，改用两条**已开放**的官方链路：
+ *
+ *   1. GET /accounts/<id>/workers/services/<name>
+ *        → script.has_assets 判断是否静态托管（替代人工白名单）
+ *   2. GET /accounts/<id>/workers/scripts/<name>/versions
+ *        → 版本记录，部署成功即产生一条
+ *   3. GET /accounts/<id>/workers/scripts/<name>/deployments
+ *        → 部署记录，含 source（wrangler / 其他）与 created_on
+ *
+ * 三条都在现有 token 权限内。若 Cloudflare 日后开放 builds API，只需在此
+ * 追加实现，上层视图结构无需改动（pagesDeploymentView 已通用）。
+ */
+
+/* ---------- Workers 部署记录 ----------
+ *
+ * 用 /workers/scripts/<name>/deployments（已开放）取部署历史。
+ * 返回的 source 字段标明部署来源：wrangler（CI 或本地推）/ api 等，
+ * 配合 annotations 可区分是否为自动构建。
+ *
+ * 注意：Workers Builds 的 REST API 未公开（见上文说明），所以这里拿不到
+ * 「构建中」这种瞬时状态；deployment 一旦出现即代表已成功上线。
+ */
+
+type cfWorkerDeployment struct {
+	ID        string `json:"id"`
+	CreatedOn string `json:"created_on"`
+	Source    string `json:"source"` // wrangler | api | ...
+	Strategy  string `json:"strategy"`
+	Annotations struct {
+		WorkersTriggeredBy string `json:"workers/triggered_by"`
+		Author             string `json:"workers/author"`
+	} `json:"annotations"`
+}
+
+// listWorkerDeployments 取某个 Worker 的最近部署（新→旧）。
+func (c *cloudflareClient) listWorkerDeployments(ctx context.Context, script string, limit int) ([]cfWorkerDeployment, error) {
+	var resp struct {
+		Deployments []cfWorkerDeployment `json:"deployments"`
 	}
 	query := map[string]string{}
 	if limit > 0 {
 		query["per_page"] = strconv.Itoa(limit)
 	}
-	var resp []cfWorkerBuild
-	err := c.get(ctx, "/accounts/"+c.accountID+"/builds/workers/"+url.PathEscape(script)+"/builds", query, &resp)
+	err := c.get(ctx, "/accounts/"+c.accountID+"/workers/scripts/"+url.PathEscape(script)+"/deployments", query, &resp)
 	if err != nil {
-		// 401/403 视为权限缺失，打标记后全程降级，避免每个站点都打一次日志
-		if isAuthError(err) {
-			if c.buildsUnavailable.CompareAndSwap(false, true) {
-				log.Printf("Workers Builds 不可用（token 缺 Workers Builds:Read），" +
-					"部署记录降级为 Workers Versions API")
-			}
-			return nil, errWorkersBuildsUnavailable
-		}
 		return nil, err
 	}
-	return resp, nil
-}
-
-// isAuthError 判断 CF API 错误是否为鉴权类（401/403 / code 12006）。
-func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var ae *cfHTTPError
-	if errors.As(err, &ae) {
-		return ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden ||
-			ae.Code == 12006 || ae.Code == 10000
-	}
-	return false
+	return resp.Deployments, nil
 }
 
 type cfWorkerVersion struct {
@@ -455,9 +475,8 @@ func (c *cloudflareClient) listWorkerVersions(ctx context.Context, script string
 
 // buildWorkerProjectView 把 Workers 静态站转成与 Pages 相同的视图，前端复用一套渲染。
 //
-// builds 非空时优先用 Workers Builds 的记录（含构建中/失败等完整状态）；
-// 为空（token 缺 Workers Builds:Read）则退回 versions（只有成功的部署）。
-func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, builds []cfWorkerBuild, accountID string, repoNames map[string]string) pagesProjectView {
+// 部署记录优先用 deployments（含 source 信息），为空时退回 versions。
+func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomain string, versions []cfWorkerVersion, deps []cfWorkerDeployment, accountID string, repoNames map[string]string) pagesProjectView {
 	v := pagesProjectView{
 		Name:         w.ID,
 		DisplayName:  lookupRepoDisplayName(repoNames, w.ID),
@@ -481,9 +500,9 @@ func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomai
 		v.SiteURL = "https://" + v.Subdomain
 	}
 
-	if len(builds) > 0 {
-		for _, b := range builds {
-			v.Recent = append(v.Recent, toWorkerBuildView(b))
+	if len(deps) > 0 {
+		for _, d := range deps {
+			v.Recent = append(v.Recent, toWorkerDeploymentView(d))
 		}
 	} else {
 		for _, ver := range versions {
@@ -511,57 +530,24 @@ func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomai
 	return v
 }
 
-// toWorkerBuildView 把 Workers Builds 记录转成通用部署视图。
-func toWorkerBuildView(b cfWorkerBuild) pagesDeploymentView {
+// toWorkerDeploymentView 把 Workers deployment 记录转成通用部署视图。
+func toWorkerDeploymentView(d cfWorkerDeployment) pagesDeploymentView {
 	vm := pagesDeploymentView{
-		ID:            b.ID,
-		Environment:   "production",
-		Status:        workerBuildStatus(b.Status),
-		Stage:         "build",
-		Branch:        b.Trigger.Metadata.Branch,
-		CommitHash:    b.Trigger.Metadata.CommitHash,
-		CommitMessage: b.Trigger.Metadata.CommitMessage,
-		TriggerType:   b.Trigger.Type,
-		CreatedOn:     b.CreatedOn,
+		ID:          d.ID,
+		Environment: "production",
+		// deployment 存在即已上线；Workers 部署是原子的，没有中间态
+		Status:      "success",
+		Stage:       "deploy",
+		TriggerType: d.Source,
+		CreatedOn:   d.CreatedOn,
 	}
-	if len(vm.CommitHash) >= 7 {
-		vm.CommitShort = vm.CommitHash[:7]
+	if len(d.ID) > 8 {
+		vm.ShortID = d.ID[:8]
+		vm.CommitShort = d.ID[:8]
 	} else {
-		vm.CommitShort = vm.CommitHash
-	}
-	if len(vm.ID) > 8 {
-		vm.ShortID = vm.ID[:8]
-	} else {
-		vm.ShortID = vm.ID
-	}
-	start, okStart := parseRFC3339(b.CreatedOn)
-	end, okEnd := parseRFC3339(b.UpdatedOn)
-	if okStart && okEnd && end.After(start) {
-		vm.DurationSec = int64(end.Sub(start).Seconds())
+		vm.ShortID = d.ID
+		vm.CommitShort = d.ID
 	}
 	return vm
-}
-
-// workerBuildStatus 把 Workers Builds 的状态映射为前端已支持的运行态。
-func workerBuildStatus(s string) string {
-	switch strings.ToLower(s) {
-	case "success", "succeeded":
-		return "success"
-	case "failure", "failed":
-		return "failure"
-	case "canceled", "cancelled":
-		return "cancelled"
-	case "running", "active":
-		return "in_progress"
-	case "queued", "pending":
-		return "queued"
-	case "skipped":
-		return "skipped"
-	default:
-		if s == "" {
-			return "queued"
-		}
-		return strings.ToLower(s)
-	}
 }
 

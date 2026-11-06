@@ -417,15 +417,14 @@ func siteKeys(v pagesProjectView) []string {
 	return keys
 }
 
-// listWorkerSiteViews 拉取指定为前端静态站的 Worker（白名单 CF_WORKERS_SITES），
-// 转成与 Pages 相同的视图。
+// listWorkerSiteViews 拉取前端静态站 Worker，转成与 Pages 相同的视图。
 //
-// 为什么用显式白名单而不是自动识别：Workers API 不暴露「是否托管静态资产」，
-// settings 里既没有 assets 标记、bindings 为空也无法区分纯静态站与无绑定的
-// 代理型 Worker（实测 2026-09）。与其靠特征猜测，不如由配置显式声明。
+// 识别方式：GET /workers/services/<name> 的 script.has_assets 字段是官方标志
+// （实测 2026-11-06：remind-web has_assets=true，music-worker/user-center 为
+// false）。这比早期的人工白名单可靠得多，也不需要维护。
 //
-// 白名单为空时退化为「自动推断」：把绑定了自定义域的 Worker 全部当静态站候选。
-// 这条兜底只在迁移完成、CF_WORKERS_SITES 忘记维护时才生效，避免站点从列表里消失。
+// CF_WORKERS_SITES 仍保留为**强制包含**用途：某些刚迁移完的站点若 has_assets
+// 一时查不到（如服务刚创建尚未生效），可用它兜底强制纳入。
 func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNames map[string]string) ([]pagesProjectView, error) {
 	scripts, err := s.cf.listWorkerScripts(ctx)
 	if err != nil {
@@ -443,25 +442,50 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 		domainByService[d.Service] = append(domainByService[d.Service], d.Hostname)
 	}
 
+	// 强制包含名单（可选）
+	forced := make(map[string]bool, len(s.cf.workerSites))
+	for _, name := range s.cf.workerSites {
+		forced[strings.ToLower(name)] = true
+	}
+
+	// 并发查每个 Worker 的 has_assets；无自定义域的直接跳过，省掉一轮请求
+	type candidate struct {
+		script   cfWorkerScript
+		isStatic bool
+	}
+	cands := make([]candidate, len(scripts))
+	csem := make(chan struct{}, 6)
+	var cwg sync.WaitGroup
+	for i, sc := range scripts {
+		cands[i].script = sc
+		if forced[strings.ToLower(sc.ID)] {
+			cands[i].isStatic = true
+			continue // 已确认纳入，不必再查
+		}
+		if len(domainByService[sc.ID]) == 0 {
+			continue // 没有自定义域，多半是纯 API Worker，跳过
+		}
+		cwg.Add(1)
+		csem <- struct{}{}
+		go func(i int, sc cfWorkerScript) {
+			defer cwg.Done()
+			defer func() { <-csem }()
+			c, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			svc, sErr := s.cf.getWorkerService(c, sc.ID)
+			if sErr != nil {
+				log.Printf("读取 Worker 服务详情失败 %s: %v", sc.ID, sErr)
+				return
+			}
+			cands[i].isStatic = svc.DefaultEnvironment.Script.HasAssets
+		}(i, sc)
+	}
+	cwg.Wait()
+
 	var statics []cfWorkerScript
-	if len(s.cf.workerSites) > 0 {
-		keep := make(map[string]bool, len(s.cf.workerSites))
-		for _, name := range s.cf.workerSites {
-			keep[strings.ToLower(name)] = true
-		}
-		for _, sc := range scripts {
-			if keep[strings.ToLower(sc.ID)] {
-				statics = append(statics, sc)
-			}
-		}
-	} else {
-		// 白名单未配置：只把「有自定义域」的 Worker 纳入，避免音乐/用户中心这类
-		// 纯 API Worker（虽然也有自定义域）以外的东西混进来。API 型 Worker 若要
-		// 排除，请显式配置 CF_WORKERS_SITES。
-		for _, sc := range scripts {
-			if len(domainByService[sc.ID]) > 0 {
-				statics = append(statics, sc)
-			}
+	for _, cd := range cands {
+		if cd.isStatic {
+			statics = append(statics, cd.script)
 		}
 	}
 	if len(statics) == 0 {
@@ -485,17 +509,20 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
-			// 优先取 Workers Builds（含构建中/失败）；权限不足则降级到 versions
-			builds, bErr := s.cf.listWorkerBuilds(c, sc.ID, perProject)
+			// 优先取 deployments（含 source，如 wrangler/api）；失败则退回 versions
+			deps, dErr := s.cf.listWorkerDeployments(c, sc.ID, perProject)
+			if dErr != nil {
+				log.Printf("读取 Worker 部署记录失败 %s: %v", sc.ID, dErr)
+			}
 			var versions []cfWorkerVersion
-			if bErr != nil {
+			if len(deps) == 0 {
 				var vErr error
 				versions, vErr = s.cf.listWorkerVersions(c, sc.ID, perProject)
 				if vErr != nil {
 					log.Printf("读取 Worker 版本失败 %s: %v", sc.ID, vErr)
 				}
 			}
-			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, builds, s.cf.accountID, repoNames)
+			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, deps, s.cf.accountID, repoNames)
 		}(i, sc)
 	}
 	wg.Wait()
