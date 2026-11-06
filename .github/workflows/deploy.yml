@@ -4,10 +4,19 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # 纯文档变更无需重新部署（否则每次改 README 都会重建生产容器）
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch: {}   # 支持在 GitHub 页面手动触发
 
 jobs:
   deploy:
+    # 🔒 安全门禁：本 job 跑在 self-hosted runner（即生产服务器本身）。
+    # 仓库一旦公开，攻击者可通过 fork + PR 让你的服务器执行其代码。
+    # 这里强制只允许本仓库（owner 自己的分支）触发，外部 fork/PR 一律跳过。
+    if: github.repository_owner == 'CheeseTJ'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
