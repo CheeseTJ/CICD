@@ -365,11 +365,18 @@ func (c *cloudflareClient) getWorkerSubdomain(ctx context.Context) (string, erro
 
 type cfWorkerServiceDetail struct {
 	DefaultEnvironment struct {
-		Script struct {
-			ID                 string `json:"id"`
-			HasAssets          bool   `json:"has_assets"`
-			LastDeployedFrom   string `json:"last_deployed_from"`
-			CompatibilityDate  string `json:"compatibility_date"`
+		// ScriptTag 是该 Worker 的内部 UUID（形如 a95ea1a7a7fd...），
+		// Workers Builds 的所有端点都必须用它而不是 Worker 名字：
+		//   GET /builds/workers/<script_tag>            → 构建配置
+		//   GET /builds/workers/<script_tag>/builds     → 构建记录
+		//   GET /builds/workers/<script_tag>/triggers   → 触发配置
+		// 用名字查会返回空数组，看起来像「没配置」——这是 2026-11-09 踩过的坑。
+		ScriptTag string `json:"script_tag"`
+		Script    struct {
+			ID                string `json:"id"`
+			HasAssets         bool   `json:"has_assets"`
+			LastDeployedFrom  string `json:"last_deployed_from"`
+			CompatibilityDate string `json:"compatibility_date"`
 		} `json:"script"`
 	} `json:"default_environment"`
 }
@@ -386,53 +393,105 @@ func (c *cloudflareClient) getWorkerService(ctx context.Context, script string) 
 
 /* ---------- Workers Builds（CF 侧构建，只读） ----------
  *
- * 2026-11-06 实测修正（此前结论有误）：builds 端点**可以**读，前提是 token
- * 具备相应权限。之前的 401 code 12006 是因为当时用的是 **account-owned token**
- * （Account → API Tokens 创建），它拿不到 user 级 scope；换成
- * **User API Token**（My Profile → API Tokens）后全部 200。
+ * 2026-11-09 实测修正（两处此前的误判）：
  *
- * 可用的只读端点：
+ * ① 权限：旧 account-owned token（Account → API Tokens）访问 builds/* 恒
+ *    401 code 12006（缺 user 级 scope）；换 User API Token 后正常。
+ * ② **路径参数必须用 script_tag，不是 Worker 名字**。用名字查恒返回空数组，
+ *    看起来像「没配置」——实际配置存在，只是查错了 key。
  *
- *   GET /accounts/<id>/builds/workers/<script>/builds    → 200 []（未配置时）
- *   GET /accounts/<id>/builds/workers/<script>/triggers  → 200 []（未配置时）
+ * 可读端点（script_tag = service.default_environment.script_tag）：
  *
- * 不可用的写端点：
+ *   GET /builds/workers/<script_tag>            → 构建配置（repo/分支/命令）
+ *   GET /builds/workers/<script_tag>/builds     → 构建记录
+ *   GET /builds/workers/<script_tag>/triggers   → 触发配置
  *
- *   POST/DELETE /accounts/<id>/builds/workers/<script>/triggers → 404 code 12000
+ * 不可写：POST/PATCH/DELETE 同类路径均 404 code 12000
+ *   → 「连接 GitHub 仓库」只能在 Cloudflare 控制台完成
  *
- * 结论：**构建记录的采集可以走 builds API**，但「连接 GitHub 仓库」这一步
- * 只能在 Cloudflare 控制台完成（API 未开放写入）。
- *
- * 降级策略：builds 为空（未配置 CF 侧构建、或纯 wrangler 部署）时，
+ * 降级策略：builds 为空（尚未触发过构建、或纯 wrangler 部署）时，
  * 退回 /workers/scripts/<name>/deployments 取部署记录。
  */
 
+// cfWorkerBuild 对应 GET /builds/workers/<script_tag>/builds 的返回项。
+// 字段名取自 2026-11-09 实测返回（不是猜的）：
+//
+//	{
+//	  "build_uuid": "b1c216fe-...",
+//	  "status": "running",            // 运行态
+//	  "build_outcome": null,          // 结束后才有：success / failure / ...
+//	  "initializing_on": "...",
+//	  "running_on": "...",
+//	  "stopped_on": null,
+//	  "created_on": "...",
+//	  "build_trigger_metadata": {
+//	    "build_trigger_source": "push_event",
+//	    "branch": "main",
+//	    "commit_hash": "...",
+//	    "commit_message": "...",
+//	    "author": "JuneT"
+//	  }
+//	}
 type cfWorkerBuild struct {
-	ID        string `json:"id"`
-	CreatedOn string `json:"created_on"`
-	UpdatedOn string `json:"updated_on"`
-	Status    string `json:"status"` // queued | running | success | failure | canceled
-	Trigger   struct {
-		Type     string `json:"type"` // github / api / ...
-		Metadata struct {
-			Branch        string `json:"branch"`
-			CommitHash    string `json:"commit_hash"`
-			CommitMessage string `json:"commit_message"`
-		} `json:"metadata"`
-	} `json:"trigger"`
+	BuildUUID     string `json:"build_uuid"`
+	Status        string `json:"status"`        // queued | running | stopped | ...
+	BuildOutcome  string `json:"build_outcome"` // success | failure | ... （未结束为 null）
+	InitializingOn string `json:"initializing_on"`
+	RunningOn      string `json:"running_on"`
+	StoppedOn      string `json:"stopped_on"`
+	CreatedOn      string `json:"created_on"`
+	ModifiedOn     string `json:"modified_on"`
+
+	BuildTriggerMetadata struct {
+		BuildTriggerSource string `json:"build_trigger_source"` // push_event / ...
+		Branch             string `json:"branch"`
+		CommitHash         string `json:"commit_hash"`
+		CommitMessage      string `json:"commit_message"`
+		Author             string `json:"author"`
+	} `json:"build_trigger_metadata"`
+}
+
+// buildStatus 把 (status, build_outcome) 归一成前端的运行态。
+// status=running 时是 in_progress；结束后看 build_outcome。
+func (b cfWorkerBuild) viewStatus() string {
+	switch strings.ToLower(b.BuildOutcome) {
+	case "success", "succeeded":
+		return "success"
+	case "failure", "failed":
+		return "failure"
+	case "canceled", "cancelled":
+		return "cancelled"
+	}
+	switch strings.ToLower(b.Status) {
+	case "queued", "initializing":
+		return "queued"
+	case "running", "building", "deploying":
+		return "in_progress"
+	case "stopped":
+		// 已停止但没有 outcome，按失败处理（多半是取消/超时）
+		return "cancelled"
+	default:
+		if b.Status == "" {
+			return "queued"
+		}
+		return strings.ToLower(b.Status)
+	}
 }
 
 // listWorkerBuilds 取某个 Worker 的 CF 侧构建记录（新→旧）。
 //
-// 未连接 GitHub 仓库时返回空数组（不是错误）。调用方据此决定是否降级到
-// deployments。权限不足（老 account token）时返回错误，由调用方静默降级。
-func (c *cloudflareClient) listWorkerBuilds(ctx context.Context, script string, limit int) ([]cfWorkerBuild, error) {
+// scriptTag 必须是 service 的 script_tag（内部 UUID），传 Worker 名字会得到空数组。
+// 未连接 GitHub 仓库 / 尚未触发构建时返回空数组（不是错误），调用方据此降级。
+func (c *cloudflareClient) listWorkerBuilds(ctx context.Context, scriptTag string, limit int) ([]cfWorkerBuild, error) {
+	if scriptTag == "" {
+		return nil, nil
+	}
 	var resp []cfWorkerBuild
 	query := map[string]string{}
 	if limit > 0 {
 		query["per_page"] = strconv.Itoa(limit)
 	}
-	err := c.get(ctx, "/accounts/"+c.accountID+"/builds/workers/"+url.PathEscape(script)+"/builds", query, &resp)
+	err := c.get(ctx, "/accounts/"+c.accountID+"/builds/workers/"+url.PathEscape(scriptTag)+"/builds", query, &resp)
 	if err != nil {
 		return nil, err
 	}
@@ -563,15 +622,16 @@ func buildWorkerProjectView(w cfWorkerScript, domains []cfWorkerDomain, subdomai
 
 // toWorkerBuildView 把 CF 侧构建记录转成通用部署视图。
 func toWorkerBuildView(b cfWorkerBuild) pagesDeploymentView {
+	m := b.BuildTriggerMetadata
 	vm := pagesDeploymentView{
-		ID:            b.ID,
+		ID:            b.BuildUUID,
 		Environment:   "production",
-		Status:        workerBuildStatus(b.Status),
+		Status:        b.viewStatus(),
 		Stage:         "build",
-		Branch:        b.Trigger.Metadata.Branch,
-		CommitHash:    b.Trigger.Metadata.CommitHash,
-		CommitMessage: b.Trigger.Metadata.CommitMessage,
-		TriggerType:   b.Trigger.Type,
+		Branch:        m.Branch,
+		CommitHash:    m.CommitHash,
+		CommitMessage: m.CommitMessage,
+		TriggerType:   m.BuildTriggerSource, // push_event / deploy_hook / manual ...
 		CreatedOn:     b.CreatedOn,
 	}
 	if len(vm.CommitHash) >= 7 {
@@ -584,35 +644,17 @@ func toWorkerBuildView(b cfWorkerBuild) pagesDeploymentView {
 	} else {
 		vm.ShortID = vm.ID
 	}
-	start, okStart := parseRFC3339(b.CreatedOn)
-	end, okEnd := parseRFC3339(b.UpdatedOn)
-	if okStart && okEnd && end.After(start) {
-		vm.DurationSec = int64(end.Sub(start).Seconds())
+	// 构建耗时：优先 running_on → stopped_on，退而 created_on → stopped_on
+	start := b.RunningOn
+	if start == "" {
+		start = b.CreatedOn
+	}
+	if s, ok := parseRFC3339(start); ok {
+		if e, ok2 := parseRFC3339(b.StoppedOn); ok2 && e.After(s) {
+			vm.DurationSec = int64(e.Sub(s).Seconds())
+		}
 	}
 	return vm
-}
-
-// workerBuildStatus 把 Workers Builds 状态映射为前端已支持的运行态。
-func workerBuildStatus(s string) string {
-	switch strings.ToLower(s) {
-	case "success", "succeeded":
-		return "success"
-	case "failure", "failed":
-		return "failure"
-	case "canceled", "cancelled":
-		return "cancelled"
-	case "running", "active":
-		return "in_progress"
-	case "queued", "pending":
-		return "queued"
-	case "skipped":
-		return "skipped"
-	default:
-		if s == "" {
-			return "queued"
-		}
-		return strings.ToLower(s)
-	}
 }
 
 // toWorkerDeploymentView 把 Workers deployment 记录转成通用部署视图。

@@ -450,20 +450,17 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 
 	// 并发查每个 Worker 的 has_assets；无自定义域的直接跳过，省掉一轮请求
 	type candidate struct {
-		script   cfWorkerScript
-		isStatic bool
+		script    cfWorkerScript
+		isStatic  bool
+		scriptTag string // Workers Builds 的所有端点都要用它，不是 Worker 名字
 	}
 	cands := make([]candidate, len(scripts))
 	csem := make(chan struct{}, 6)
 	var cwg sync.WaitGroup
 	for i, sc := range scripts {
 		cands[i].script = sc
-		if forced[strings.ToLower(sc.ID)] {
-			cands[i].isStatic = true
-			continue // 已确认纳入，不必再查
-		}
-		if len(domainByService[sc.ID]) == 0 {
-			continue // 没有自定义域，多半是纯 API Worker，跳过
+		if len(domainByService[sc.ID]) == 0 && !forced[strings.ToLower(sc.ID)] {
+			continue // 没有自定义域且不在强制名单里，多半是纯 API Worker
 		}
 		cwg.Add(1)
 		csem <- struct{}{}
@@ -475,17 +472,31 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 			svc, sErr := s.cf.getWorkerService(c, sc.ID)
 			if sErr != nil {
 				log.Printf("读取 Worker 服务详情失败 %s: %v", sc.ID, sErr)
+				// 强制名单里的站点即使查不到详情也保留，只是拿不到构建记录
+				cands[i].isStatic = forced[strings.ToLower(sc.ID)]
 				return
 			}
 			cands[i].isStatic = svc.DefaultEnvironment.Script.HasAssets
+			cands[i].scriptTag = svc.DefaultEnvironment.ScriptTag
 		}(i, sc)
 	}
 	cwg.Wait()
 
-	var statics []cfWorkerScript
+	// 强制名单里的站点一律纳入（哪怕 has_assets 一时查不到）
+	for i := range cands {
+		if forced[strings.ToLower(cands[i].script.ID)] {
+			cands[i].isStatic = true
+		}
+	}
+
+	type staticWorker struct {
+		script    cfWorkerScript
+		scriptTag string
+	}
+	var statics []staticWorker
 	for _, cd := range cands {
 		if cd.isStatic {
-			statics = append(statics, cd.script)
+			statics = append(statics, staticWorker{script: cd.script, scriptTag: cd.scriptTag})
 		}
 	}
 	if len(statics) == 0 {
@@ -500,18 +511,20 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 	views := make([]pagesProjectView, len(statics))
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
-	for i, sc := range statics {
+	for i, sw := range statics {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, sc cfWorkerScript) {
+		go func(i int, sw staticWorker) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			sc := sw.script
 			c, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 
 			// 优先取 CF 侧构建记录（含构建中/失败态）。
-			// 未连接 GitHub 仓库时返回空数组，静默降级到 deployments。
-			builds, bErr := s.cf.listWorkerBuilds(c, sc.ID, perProject)
+			// ⚠️ listWorkerBuilds 必须传 script_tag，传 Worker 名字会得到空数组。
+			// 未连接 GitHub 仓库时也是空数组，静默降级到 deployments。
+			builds, bErr := s.cf.listWorkerBuilds(c, sw.scriptTag, perProject)
 			if bErr != nil {
 				log.Printf("读取 Worker 构建记录失败 %s: %v", sc.ID, bErr)
 			}
@@ -533,7 +546,7 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 				}
 			}
 			views[i] = buildWorkerProjectView(sc, domains, subdomain, versions, deps, builds, s.cf.accountID, repoNames)
-		}(i, sc)
+		}(i, sw)
 	}
 	wg.Wait()
 	return views, nil
