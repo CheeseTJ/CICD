@@ -32,12 +32,19 @@ type config struct {
 	HealthTargets    []monitorTarget // 可选：被监控服务的健康地址（HEALTH_TARGETS），探测在浏览器端完成
 	PublicOrigin     string          // 可选：本控制台对外地址（PUBLIC_ORIGIN），跨域判定时用作 Origin
 	Auth             authConfig      // 鉴权：USER_CENTER_URL 非空时启用用户中心登录
+
+	// --- 鸿蒙（HarmonyOS）应用：重签与到期管理 ---
+	HmosFile     string // 鸿蒙应用清单，默认与 DATA_FILE 同目录的 hmos.json
+	HmosSignTool string // hapsigntoolv2.jar 路径（HMOS_SIGN_TOOL）
+	HmosJava     string // java 可执行文件（HMOS_JAVA），空则用 PATH 里的 java
+	HmosWarnDays int    // 剩余天数 ≤ 此值时标为「即将过期」（HMOS_WARN_DAYS，默认 30）
 }
 
 func loadConfig() *config {
+	dataFile := getenv("DATA_FILE", "./data.json")
 	return &config{
 		Port:             getenv("PORT", "8080"),
-		DataFile:         getenv("DATA_FILE", "./data.json"),
+		DataFile:         dataFile,
 		GitHubToken:      os.Getenv("GITHUB_TOKEN"),
 		PGYERKey:         os.Getenv("PGYER_API_KEY"),
 		GitHubOwner:      os.Getenv("GITHUB_OWNER"),
@@ -53,6 +60,10 @@ func loadConfig() *config {
 			App:           getenv("USER_CENTER_APP", "cicd"),
 			AllowedEmails: splitCSV(os.Getenv("ALLOWED_EMAILS")),
 		},
+		HmosFile:     getenv("HMOS_FILE", hmosPathFromDataFile(dataFile)),
+		HmosSignTool: os.Getenv("HMOS_SIGN_TOOL"),
+		HmosJava:     os.Getenv("HMOS_JAVA"),
+		HmosWarnDays: getenvInt("HMOS_WARN_DAYS", 30),
 	}
 }
 
@@ -83,6 +94,16 @@ func getenvDuration(k string, def time.Duration) time.Duration {
 	return def
 }
 
+// getenvInt 读取整数配置，非法或未设置时用默认值。
+func getenvInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 type server struct {
 	cfg     *config
 	store   *Store
@@ -97,6 +118,9 @@ type server struct {
 
 	jobsMu sync.Mutex
 	jobs   map[string]*syncJob
+
+	// 鸿蒙应用清单（独立存储，见 hmos_store.go）
+	hmos *HmosStore
 }
 
 type assetView struct {
@@ -148,6 +172,11 @@ func main() {
 		log.Fatalf("初始化数据文件失败: %v", err)
 	}
 
+	hmosStore, err := NewHmosStore(cfg.HmosFile)
+	if err != nil {
+		log.Fatalf("初始化鸿蒙应用清单失败: %v", err)
+	}
+
 	s := &server{
 		cfg:     cfg,
 		store:   store,
@@ -158,6 +187,7 @@ func main() {
 		monHTTP: &http.Client{Timeout: monitorProbeTimeout},
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
+		hmos:    hmosStore,
 	}
 
 	mux := http.NewServeMux()
@@ -173,8 +203,15 @@ func main() {
 	mux.HandleFunc("/api/repos/sync", s.auth.wrap(s.handleSync))
 	mux.HandleFunc("/api/repos/sync/progress", s.auth.wrap(s.handleSyncProgress))
 	mux.HandleFunc("/api/monitor", s.auth.wrap(s.handleMonitor))
+	// 鸿蒙应用：证书到期监控 / 重签 / 上传蒲公英
+	mux.HandleFunc("/api/hmos", s.auth.wrap(s.handleHmosList))
+	mux.HandleFunc("/api/hmos/save", s.auth.wrap(s.handleHmosUpsert))
+	mux.HandleFunc("/api/hmos/delete", s.auth.wrap(s.handleHmosDelete))
+	mux.HandleFunc("/api/hmos/resign", s.auth.wrap(s.handleHmosResign))
+	mux.HandleFunc("/api/hmos/upload", s.auth.wrap(s.handleHmosUpload))
 
 	s.startAutoSync()
+	s.startHmosAutoResign()
 	// 健康监控的探测在浏览器端完成，服务端只在启动/定时刷新时判定各目标是否
 	// 允许跨域读取（结果随 /api/monitor 下发），不做任何定时探测。
 	s.startCORSRefresh()
@@ -235,6 +272,10 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	out["cf_pages_projects"] = strings.Join(s.cfg.CFProjects, ",")
 	out["monitor_targets"] = len(s.cfg.HealthTargets)
 	out["monitor_mode"] = "client-side"
+	// 鸿蒙重签相关：只报「是否可用」，不泄露路径细节
+	out["hmos_sign_tool"] = s.cfg.HmosSignTool != ""
+	out["hmos_warn_days"] = s.cfg.HmosWarnDays
+	out["hmos_file"] = s.cfg.HmosFile
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -551,7 +592,6 @@ func (s *server) listWorkerSiteViews(ctx context.Context, perProject int, repoNa
 	wg.Wait()
 	return views, nil
 }
-
 
 func (s *server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)

@@ -49,6 +49,31 @@ Go 单二进制，前端是它内嵌的一个 `index.html`（零构建、零 nod
 - 针对自托管场景做了取舍：容器虽走 host 网络，探测仍统一走公网域名，顺带验证隧道与
   证书链
 
+### 鸿蒙应用（证书到期与重签）
+
+侧边栏「鸿蒙」视图管理 HarmonyOS 应用的签名材料生命周期：
+
+- **到期倒计时** —— 分别展示证书（`.cer`）与 profile（`.p7b`）的有效期，
+  取较早者作为真正失效时间；剩余 ≤ `HMOS_WARN_DAYS`（默认 30 天）标黄，
+  过期标红
+- **一键跳转华为开发者中心** —— 证书到期后去 AGC 重新下载 cert / profile
+- **重签** —— 用新的 cert+profile 给已有 HAP 续期。HAP 的签名是追加在 zip 尾部的
+  独立块，重签只换签名块，**包内容不动，不需要重新编译**
+- **同步蒲公英** —— 重签后上传（`buildType=harmonyos`），回写下载页地址，
+  手机扫码即可安装
+- **到期自动重签** —— 开启后每天检查一次，临近过期就自动重签 + 上传
+
+> 有效期直接读本地文件的 X.509 `notAfter` 与 profile 的 `validity.not-after`，
+> 不调用 AGC API，所以不依赖网络、也不需要 client_secret。
+>
+> ⚠️ **keystore 不要跟着换**。重签必须用同一把私钥，否则 cert 与私钥不匹配，
+> 签出来的包装上就报 pkcs7 校验失败（错误信息完全不指向真实原因）。
+
+```bash
+# 签名工具（重签功能需要，不配则只显示倒计时）
+curl -O https://repo.huaweicloud.com/harmonyos/develop_tools/hapsigntoolv2.jar
+```
+
 ### 鉴权
 - 接入统一身份中心（JWT + JWKS 校验），支持 `USER_CENTER_URL` / `USER_CENTER_APP`
 - 邮箱白名单，在「角色必须是 admin」之上再收窄一层
@@ -78,6 +103,9 @@ curl http://localhost:8090/api/health
 | `CLOUDFLARE_API_TOKEN` | Pages 部署记录、Workers 脚本 | `/api/pages` 返回 `configured=false` 并提示 |
 | `CF_ACCOUNT_ID` | 同上 | 同上 |
 | `HEALTH_TARGETS` | 服务健康探测目标 | 监控视图关闭 |
+| `HMOS_SIGN_TOOL` | `hapsigntoolv2.jar` 路径 | 鸿蒙重签不可用，倒计时仍显示 |
+| `HMOS_KEYSTORE_PWD` | p12/jks 密码 | 重签报错提示缺密码 |
+| `HMOS_WARN_DAYS` | 剩余多少天标「即将过期」（默认 30） | 用默认值 |
 | `USER_CENTER_URL` / `USER_CENTER_APP` | 登录鉴权 | **鉴权关闭，接口对外开放** |
 | `ALLOWED_EMAILS` | 邮箱白名单 | 任意 admin 可操作 |
 
@@ -97,10 +125,14 @@ go test ./...
 ```text
 main.go            HTTP 路由 + 启动 + 内嵌前端
 github.go          GitHub API 客户端
-pgyer.go           蒲公英 API 客户端
+pgyer.go           蒲公英 API 客户端（APK / HAP 两种 buildType）
 cloudflare.go      Pages / Workers 采集
 platforms.go       平台徽章判定
 monitor.go         服务健康探测
+hmos_cert.go       鸿蒙证书解析（X.509 与 p7b 有效期）
+hmos_resign.go     HAP 重签名（调 hapsigntoolv2.jar）
+hmos_store.go      鸿蒙应用清单持久化
+hmos_api.go        鸿蒙相关接口 + 到期自动重签
 store.go           data/ 下的 JSON 持久化
 auth.go            JWT / JWKS 校验与中间件
 web/index.html     内嵌前端（单文件，无构建）

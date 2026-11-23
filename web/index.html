@@ -185,6 +185,67 @@
     }
     .banner.show { display: block; }
 
+    /* ---------- 鸿蒙证书页 ---------- */
+    .cert-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; margin: 12px 0 0;
+      border-radius: var(--radius-btn);
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 12.5px;
+    }
+    .cert-bar .cert-days { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .cert-ok      { color: var(--green); }
+    .cert-warn    { color: var(--orange); }
+    .cert-expired { color: var(--red); }
+    .cert-unknown { color: var(--muted); }
+
+    .cert-meter {
+      position: relative; height: 4px; margin-top: 9px;
+      background: rgba(255, 255, 255, 0.07); border-radius: 2px; overflow: hidden;
+    }
+    .cert-meter > i { position: absolute; inset: 0 auto 0 0; border-radius: 2px; }
+    .cert-meter.ok > i      { background: var(--green); }
+    .cert-meter.warn > i    { background: var(--orange); }
+    .cert-meter.expired > i { background: var(--red); }
+
+    .cert-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px; margin-top: 11px;
+    }
+    .cert-cell {
+      padding: 8px 10px; border-radius: 9px;
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .cert-cell b { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
+    .cert-cell span { display: block; margin-top: 3px; font-size: 12.5px; }
+    .cert-cell .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+
+    .hmos-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .hmos-actions .btn { flex: 0 0 auto; }
+
+    .hmos-err {
+      margin-top: 11px; padding: 9px 11px; border-radius: 9px;
+      font-size: 12px; color: #fca5a5; word-break: break-word;
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.28);
+    }
+
+    .hmos-form { display: grid; gap: 12px; }
+    .hmos-form label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+    .hmos-form input[type=text] {
+      width: 100%; padding: 9px 11px; font-size: 13px;
+      color: var(--text); background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border); border-radius: var(--radius-btn);
+      font-family: inherit;
+    }
+    .hmos-form input[type=text]:focus { outline: none; border-color: #2b3550; }
+    .hmos-form .hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+    .hmos-form .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .hmos-check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .hmos-check input { width: 15px; height: 15px; accent-color: var(--accent-strong); }
+
     /* ---------- 统计卡 ---------- */
     .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 30px; }
     .stat {
@@ -657,6 +718,10 @@
           <span class="nav-icon" data-icon="activity"></span>
           <span class="nav-label">监控</span>
         </button>
+        <button class="nav-item" data-view="hmos">
+          <span class="nav-icon" data-icon="tablet"></span>
+          <span class="nav-label">鸿蒙</span>
+        </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon" data-icon="gear"></span>
           <span class="nav-label">设置</span>
@@ -784,6 +849,40 @@
           <div class="empty" id="monitorEmpty" style="display:none"></div>
         </section>
 
+        <section class="view" id="view-hmos">
+          <div class="page-head">
+            <div>
+              <h1>鸿蒙应用</h1>
+              <p>监控签名证书与 profile 的有效期；到期前一键重签并同步到蒲公英</p>
+            </div>
+            <div class="section-tools">
+              <button class="btn" id="hmosRefreshBtn">
+                <span data-icon="refresh"></span><span>刷新</span>
+              </button>
+              <button class="btn primary" id="hmosAddBtn">
+                <span data-icon="plus"></span><span>添加应用</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="banner" id="hmosBanner"></div>
+
+          <div class="stats" id="hmosStats"></div>
+
+          <div class="section-head">
+            <div>
+              <h2>应用列表</h2>
+              <p class="sub" id="hmosCount"></p>
+            </div>
+            <div class="section-tools">
+              <div class="pills" id="hmosPills"></div>
+            </div>
+          </div>
+
+          <div class="grid" id="hmosGrid"></div>
+          <div class="empty" id="hmosEmpty" style="display:none"></div>
+        </section>
+
         <section class="view" id="view-settings">
           <div class="page-head">
             <div>
@@ -823,6 +922,10 @@
     </button>
     <button class="tab" data-view="monitor">
       <span data-icon="activity" data-size="21"></span><span>监控</span>
+    </button>
+    <button class="tab" data-view="hmos">
+      <span data-icon="tablet"></span>
+      <span>鸿蒙</span>
     </button>
     <button class="tab" data-view="settings">
       <span data-icon="gear" data-size="21"></span><span>设置</span>
@@ -2494,6 +2597,449 @@
       });
     }
 
+    /* ---------- 鸿蒙应用：证书到期监控 / 重签 / 同步蒲公英 ---------- */
+
+    let hmosApps = [];
+    let hmosMeta = { warn_days: 30, sign_tool: false, console_url: '' };
+    let hmosFilter = 'all';
+    let hmosLoaded = false;
+    let hmosBusy = {};
+
+    function hmosBanner(msg, isError) {
+      const b = document.getElementById('hmosBanner');
+      if (!msg) { b.classList.remove('show'); b.textContent = ''; return; }
+      b.textContent = msg;
+      // banner 默认配色是橙色警告；错误时换成红色
+      b.style.color = isError ? '#fca5a5' : '';
+      b.style.background = isError ? 'rgba(239,68,68,.1)' : '';
+      b.style.borderColor = isError ? 'rgba(239,68,68,.35)' : '';
+      b.classList.add('show');
+    }
+
+    // 证书状态 → 文案 / 配色类
+    function certState(cert) {
+      if (!cert || !cert.status) return { cls: 'unknown', text: '未知', days: null };
+      const d = cert.days_left;
+      switch (cert.status) {
+        case 'expired': return { cls: 'expired', text: '已过期', days: d };
+        case 'warn': return { cls: 'warn', text: '即将过期', days: d };
+        case 'ok': return { cls: 'ok', text: '有效', days: d };
+        default: return { cls: 'unknown', text: '未知', days: null };
+      }
+    }
+
+    // 剩余天数 → 进度条宽度。以 365 天为满格，过期则满格红色。
+    function certPercent(cert) {
+      if (!cert || !cert.effective_not_after) return 0;
+      const total = Math.max(1, Math.round((cert.effective_not_after - (cert.cert_not_after || cert.effective_not_after)) / 86400));
+      const base = total > 30 ? total : 365;
+      const left = Math.max(0, cert.days_left || 0);
+      return Math.max(2, Math.min(100, Math.round(left / base * 100)));
+    }
+
+    function fmtDate(unix) {
+      if (!unix) return '—';
+      const d = new Date(unix * 1000);
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+
+    function hmosStatCards() {
+      const total = hmosApps.length;
+      const expiring = hmosApps.filter(a => a.cert && (a.cert.status === 'warn')).length;
+      const expired = hmosApps.filter(a => a.cert && a.cert.status === 'expired').length;
+      const linked = hmosApps.filter(a => a.pgyer_shortcut_url).length;
+      renderStatCards('hmosStats', [
+        { icon: 'tablet', label: '应用', value: total },
+        { icon: 'clock', label: '即将过期', value: expiring },
+        { icon: 'activity', label: '已过期', value: expired },
+        { icon: 'cloud', label: '已传蒲公英', value: linked }
+      ]);
+    }
+
+    function hmosMatches(a) {
+      if (hmosFilter === 'expiring') {
+        return a.cert && (a.cert.status === 'warn' || a.cert.status === 'expired');
+      }
+      if (hmosFilter === 'linked') return !!a.pgyer_shortcut_url;
+      return true;
+    }
+
+    function renderHmosPills() {
+      const box = document.getElementById('hmosPills');
+      box.innerHTML = '';
+      [['all', '全部'], ['expiring', '待续期'], ['linked', '已传蒲公英']].forEach(([k, label]) => {
+        const b = el('button', 'pill' + (hmosFilter === k ? ' active' : ''), label);
+        b.onclick = () => { hmosFilter = k; renderHmos(); };
+        box.appendChild(b);
+      });
+    }
+
+    // 单个应用卡片
+    function hmosCard(a) {
+      const card = el('div', 'card');
+      const top = el('div', 'card-top');
+
+      const ico = el('div', 'card-icon');
+      ico.style.background = 'linear-gradient(135deg,' + GRADIENTS[Math.abs(hash(a.id)) % GRADIENTS.length].join(',') + ')';
+      ico.innerHTML = svg('tablet', 20);
+      top.appendChild(ico);
+
+      const title = el('div', 'card-title');
+      title.appendChild(el('div', 'card-name', a.name || a.bundle_name));
+      title.appendChild(el('div', 'card-desc', a.bundle_name));
+      top.appendChild(title);
+
+      // 状态徽标
+      const st = certState(a.cert);
+      const badge = el('span', 'status ' + (st.cls === 'ok' ? 'ok' : st.cls === 'expired' ? 'err' : st.cls === 'warn' ? 'warn' : 'idle'));
+      badge.appendChild(el('span', 'dot'));
+      badge.appendChild(document.createTextNode(st.text));
+      top.appendChild(badge);
+      card.appendChild(top);
+
+      // 证书有效期条
+      const bar = el('div', 'cert-bar');
+      const daysNode = el('span', 'cert-days ' + ('cert-' + st.cls),
+        st.days === null ? '有效期未知' : (st.days < 0 ? '已过期 ' + (-st.days) + ' 天' : '剩余 ' + st.days + ' 天'));
+      bar.appendChild(daysNode);
+
+      // 两个有效期分别展示：谁先到期谁决定能不能装新包
+      const parts = [];
+      if (a.cert && a.cert.cert_not_after) parts.push('证书 ' + fmtDate(a.cert.cert_not_after));
+      if (a.cert && a.cert.profile_not_after) parts.push('profile ' + fmtDate(a.cert.profile_not_after));
+      if (parts.length) {
+        const t = el('span', '', parts.join(' · '));
+        t.style.marginLeft = 'auto';
+        t.style.color = 'var(--muted)';
+        t.style.fontSize = '11.5px';
+        bar.appendChild(t);
+      }
+      card.appendChild(bar);
+
+      const meter = el('div', 'cert-meter ' + st.cls);
+      const fill = el('i');
+      fill.style.width = certPercent(a.cert) + '%';
+      meter.appendChild(fill);
+      card.appendChild(meter);
+
+      // 关键信息网格
+      const grid = el('div', 'cert-grid');
+      const cell = (label, value, mono) => {
+        const c = el('div', 'cert-cell');
+        c.appendChild(el('b', '', label));
+        const v = el('span' + (mono ? ' mono' : ''), '', value);
+        c.appendChild(v);
+        grid.appendChild(c);
+      };
+      cell('KeyAlias', a.key_alias || '—');
+      cell('最近上传', a.last_upload_at ? relTime(a.last_upload_at) : '—');
+      if (a.cert && a.cert.bundle_name) cell('profile 包名', a.cert.bundle_name, true);
+      if (a.hap_file) cell('源包', a.hap_exists ? '就绪' : '缺失');
+      card.appendChild(grid);
+
+      // 错误提示
+      if (a.last_error) {
+        card.appendChild(el('div', 'hmos-err', a.last_error));
+      }
+      if (a.cert && a.cert.errors && a.cert.errors.length) {
+        card.appendChild(el('div', 'hmos-err', a.cert.errors.join('；')));
+      }
+
+      // 操作区
+      const actions = el('div', 'hmos-actions');
+
+      const busy = hmosBusy[a.id] || '';
+
+      const mkBtn = (label, icon, cls, fn, disable) => {
+        const b = el('button', 'btn' + (cls ? ' ' + cls : ''), '');
+        b.innerHTML = svg(icon, 15) + '<span style="margin-left:6px">' + label + '</span>';
+        b.disabled = !!disable;
+        b.onclick = fn;
+        return b;
+      };
+
+      // 跳华为开发者中心下载新证书
+      const consoleUrl = a.huawei_console_url || hmosMeta.console_url;
+      actions.appendChild(mkBtn('去华为下载证书', 'external', '', () => {
+        window.open(consoleUrl, '_blank', 'noopener');
+      }));
+
+      // 重签
+      actions.appendChild(mkBtn(
+        busy === 'resign' ? '重签中…' : '重签',
+        'refresh', '',
+        () => hmosResign(a.id),
+        busy || !a.hap_exists
+      ));
+
+      // 上传蒲公英
+      actions.appendChild(mkBtn(
+        busy === 'upload' ? '上传中…' : '同步蒲公英',
+        'cloud', 'primary',
+        () => hmosUpload(a.id),
+        busy || !a.hap_exists
+      ));
+
+      // 下载页
+      if (a.pgyer_shortcut_url) {
+        actions.appendChild(mkBtn('下载页', 'globe', '', () => {
+          window.open(a.pgyer_shortcut_url, '_blank', 'noopener');
+        }));
+      }
+
+      // 编辑
+      actions.appendChild(mkBtn('编辑', 'gear', '', () => hmosOpenForm(a)));
+
+      // 删除
+      actions.appendChild(mkBtn('', 'trash', 'icon-only', () => hmosDelete(a), busy));
+
+      card.appendChild(actions);
+      return card;
+    }
+
+    function renderHmos() {
+      hmosStatCards();
+      renderHmosPills();
+
+      const list = hmosApps.filter(a => {
+        if (!hmosMatches(a)) return false;
+        if (!keyword) return true;
+        const k = keyword.toLowerCase();
+        return (a.name || '').toLowerCase().includes(k) ||
+          (a.bundle_name || '').toLowerCase().includes(k);
+      });
+
+      const grid = document.getElementById('hmosGrid');
+      grid.innerHTML = '';
+      const empty = document.getElementById('hmosEmpty');
+
+      // 未配置签名工具时给出明确提示 —— 否则点重签只会看到工具缺失的报错
+      if (!hmosMeta.sign_tool) {
+        hmosBanner('未配置 HMOS_SIGN_TOOL（hapsigntoolv2.jar 路径），重签功能不可用。证书到期时间仍可正常监控。');
+      }
+
+      if (!list.length) {
+        grid.style.display = 'none';
+        empty.style.display = '';
+        empty.textContent = hmosApps.length
+          ? '没有匹配的应用'
+          : '还没有添加鸿蒙应用。点右上角「添加应用」，填入包名与证书路径即可。';
+      } else {
+        grid.style.display = '';
+        empty.style.display = 'none';
+        list.forEach(a => grid.appendChild(hmosCard(a)));
+      }
+
+      document.getElementById('hmosCount').textContent =
+        '共 ' + hmosApps.length + ' 个应用' + (list.length !== hmosApps.length ? '，显示 ' + list.length + ' 个' : '');
+    }
+
+    async function loadHmos(force) {
+      if (hmosLoaded && !force) return;
+      try {
+        const data = await api('/api/hmos');
+        hmosApps = data.apps || [];
+        hmosMeta = {
+          warn_days: data.warn_days || 30,
+          sign_tool: !!data.sign_tool,
+          console_url: data.console_url || ''
+        };
+        hmosLoaded = true;
+        hmosBanner('');
+        renderHmos();
+      } catch (e) {
+        hmosBanner('加载鸿蒙应用失败：' + e.message, true);
+      }
+    }
+
+    async function hmosResign(id) {
+      hmosBusy[id] = 'resign';
+      renderHmos();
+      try {
+        const r = await api('/api/hmos/resign', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        hmosBanner('重签成功：' + (r.message || '') + '，产物已覆盖源包');
+        await loadHmos(true);
+      } catch (e) {
+        hmosBanner('重签失败：' + e.message, true);
+      } finally {
+        hmosBusy[id] = '';
+        renderHmos();
+      }
+    }
+
+    async function hmosUpload(id) {
+      hmosBusy[id] = 'upload';
+      renderHmos();
+      try {
+        const r = await api('/api/hmos/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        hmosBanner('已同步到蒲公英' + (r.version ? '：v' + r.version : '') + '，可从下载页安装');
+        await loadHmos(true);
+      } catch (e) {
+        hmosBanner('同步失败：' + e.message, true);
+      } finally {
+        hmosBusy[id] = '';
+        renderHmos();
+      }
+    }
+
+    async function hmosDelete(a) {
+      if (!confirm('移除「' + (a.name || a.bundle_name) + '」？\n\n只会从列表移除，磁盘上的证书与包文件不受影响。')) return;
+      try {
+        await api('/api/hmos/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: a.id })
+        });
+        await loadHmos(true);
+      } catch (e) {
+        hmosBanner('移除失败：' + e.message, true);
+      }
+    }
+
+    /* ---------- 添加 / 编辑表单 ---------- */
+
+    let hmosFormBackdrop = null;
+
+    function hmosField(label, id, value, placeholder, hint) {
+      const wrap = el('div');
+      wrap.appendChild(el('label', '', label));
+      const input = el('input');
+      input.type = 'text';
+      input.id = id;
+      input.value = value || '';
+      if (placeholder) input.placeholder = placeholder;
+      wrap.appendChild(input);
+      if (hint) wrap.appendChild(el('div', 'hint', hint));
+      return wrap;
+    }
+
+    function hmosOpenForm(app) {
+      const a = app || {};
+      hmosCloseForm();
+
+      const backdrop = el('div');
+      backdrop.style.cssText = 'position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(4,7,14,.72);backdrop-filter:blur(3px)';
+      const panel = el('div');
+      panel.style.cssText = 'width:min(620px,100%);max-height:88vh;overflow:auto;padding:22px;border-radius:16px;background:#0d1424;border:1px solid #1c2438;box-shadow:0 24px 60px rgba(0,0,0,.5)';
+
+      const head = el('div');
+      head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:16px';
+      const h = el('h2', '', app ? '编辑应用' : '添加鸿蒙应用');
+      h.style.cssText = 'margin:0;font-size:17px';
+      head.appendChild(h);
+      const closeBtn = el('button', 'btn icon-only');
+      closeBtn.innerHTML = svg('close', 16);
+      closeBtn.onclick = hmosCloseForm;
+      head.appendChild(closeBtn);
+      panel.appendChild(head);
+
+      const form = el('div', 'hmos-form');
+      form.appendChild(hmosField('包名（bundleName）', 'hf-bundle', a.bundle_name,
+        'com.junet.music', '必须与 HAP 里 module.json 的 bundleName 一致'));
+      form.appendChild(hmosField('显示名称', 'hf-name', a.name, 'Music', '仅用于列表展示，可留空'));
+
+      const row1 = el('div', 'row2');
+      row1.appendChild(hmosField('证书文件（.cer / .pem）', 'hf-cert', a.cert_file,
+        '/data/hmos/com.junet.music/cert.pem', 'AGC 下载的应用证书链'));
+      row1.appendChild(hmosField('Profile（.p7b）', 'hf-profile', a.profile_file,
+        '/data/hmos/com.junet.music/profile.p7b', 'AGC 下载的 provisioning profile'));
+      form.appendChild(row1);
+
+      const row2 = el('div', 'row2');
+      row2.appendChild(hmosField('Keystore（.p12 / .jks）', 'hf-keystore', a.keystore,
+        '/data/hmos/com.junet.music/key.p12', '私钥库。换证书时**不要换它**，否则旧包重签会失败'));
+      row2.appendChild(hmosField('KeyAlias', 'hf-alias', a.key_alias,
+        'openharmony application release', 'p12 里私钥的别名'));
+      form.appendChild(row2);
+
+      form.appendChild(hmosField('HAP 源包路径', 'hf-hap', a.hap_file,
+        '/data/hmos/com.junet.music/app.hap', '重签的输入，也是重签后的输出（原地覆盖）。先上传一次包到这里'));
+
+      const checkWrap = el('div', 'hmos-check');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.id = 'hf-auto';
+      cb.checked = !!a.auto_resign;
+      checkWrap.appendChild(cb);
+      checkWrap.appendChild(el('span', '', '证书临近到期时自动重签并上传蒲公英'));
+      form.appendChild(checkWrap);
+      form.appendChild(el('div', 'hint',
+        '自动重签每天最多触发一次，仅在剩余天数 ≤ ' + (hmosMeta.warn_days || 30) + ' 天或已过期时执行。需先配好源包路径。'));
+
+      const foot = el('div');
+      foot.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;margin-top:18px';
+      const cancel = el('button', 'btn', '取消');
+      cancel.onclick = hmosCloseForm;
+      foot.appendChild(cancel);
+
+      const save = el('button', 'btn primary', '保存');
+      save.onclick = async () => {
+        const val = id => document.getElementById(id).value.trim();
+        const bundle = val('hf-bundle');
+        if (!bundle) { hmosBanner('包名不能为空', true); return; }
+        const payload = {
+          id: a.id || bundle,
+          bundle_name: bundle,
+          name: val('hf-name'),
+          cert_file: val('hf-cert'),
+          profile_file: val('hf-profile'),
+          keystore: val('hf-keystore'),
+          key_alias: val('hf-alias'),
+          hap_file: val('hf-hap'),
+          auto_resign: document.getElementById('hf-auto').checked
+        };
+        save.disabled = true;
+        save.textContent = '保存中…';
+        try {
+          await api('/api/hmos/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          hmosCloseForm();
+          hmosBanner('已保存');
+          await loadHmos(true);
+        } catch (e) {
+          hmosBanner('保存失败：' + e.message, true);
+          save.disabled = false;
+          save.textContent = '保存';
+        }
+      };
+      foot.appendChild(save);
+      form.appendChild(foot);
+
+      panel.appendChild(form);
+      backdrop.appendChild(panel);
+      backdrop.onclick = e => { if (e.target === backdrop) hmosCloseForm(); };
+      document.body.appendChild(backdrop);
+      hmosFormBackdrop = backdrop;
+
+      // 自动聚焦第一个输入，键盘操作更顺
+      const first = document.getElementById('hf-bundle');
+      if (first) first.focus();
+    }
+
+    function hmosCloseForm() {
+      if (hmosFormBackdrop) {
+        hmosFormBackdrop.remove();
+        hmosFormBackdrop = null;
+      }
+    }
+
+    // 页面按钮绑定
+    document.getElementById('hmosRefreshBtn').onclick = () => loadHmos(true);
+    document.getElementById('hmosAddBtn').onclick = () => hmosOpenForm(null);
+
+
     /* ---------- 事件绑定 ---------- */
     let activeView = 'apps';
 
@@ -2502,6 +3048,7 @@
       if (activeView === 'deployments') renderDeployments();
       else if (activeView === 'frontends') renderPages();
       else if (activeView === 'monitor') renderMonitor();
+      else if (activeView === 'hmos') renderHmos();
       else render();
     });
     setupSortButton('sortBtn',
@@ -2559,6 +3106,7 @@
       document.querySelector('.search').classList.toggle('hidden', name === 'settings');
       if (name === 'deployments') loadDeployments();
       if (name === 'frontends') loadPages();
+      if (name === 'hmos') loadHmos();
       if (name === 'monitor') { loadMonitor(); startMonitorPolling(); }
       else stopMonitorPolling();
       if (name === 'apps') loadDeployments(); // 应用卡片上合并展示构建信息，需要部署数据

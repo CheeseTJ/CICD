@@ -15,6 +15,10 @@ services:
       # 覆盖 .env 里的本地路径，指向容器内的持久化目录
       PORT: "8090"
       DATA_FILE: /app/data/data.json
+      # 鸿蒙应用清单落在同一个命名卷里，随容器重建保留
+      HMOS_FILE: /app/data/hmos.json
+      # JRE 已装进镜像（见 Dockerfile），java 在 /usr/bin/java
+      HMOS_JAVA: /usr/bin/java
     ports:
       # 只绑回环，公网入口统一走 cloudflared 隧道
       - "127.0.0.1:8090:8090"
@@ -22,6 +26,14 @@ services:
       # 用命名卷而非绑定挂载：自动部署会在 runner 工作区重建容器，
       # 绑定挂载会跟着切换到空的 ./data，命名卷则跨工作区保持状态
       - cicd-console-data:/app/data
+
+      # ---- 鸿蒙签名工具 ----
+      # jar 只需只读挂载；宿主机的路径通过环境变量 HMOS_HOST_HMOS_DIR 覆盖，
+      # 默认放在 secrets 目录下（.env 不入库，这个目录同样只有部署用户可读）。
+      # 目录不存在时 docker 会自动建空目录，此时 HMOS_SIGN_TOOL 指向的文件缺失，
+      # 重签会明确报「找不到签名工具」而不是崩掉。
+      - ${HMOS_HOST_HMOS_DIR:-/home/ubuntu/server/secrets/cicd/hmos}:/app/hmos:ro
+
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/api/health"]
       interval: 30s

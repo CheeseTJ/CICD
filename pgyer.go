@@ -71,9 +71,17 @@ func (p *pgyerClient) postForm(ctx context.Context, u string, form url.Values) (
 }
 
 func (p *pgyerClient) getCOSToken(ctx context.Context) (*cosToken, error) {
+	return p.getCOSTokenFor(ctx, "android")
+}
+
+// getCOSTokenFor 按 buildType 申请上传凭证。
+//
+// 蒲公英按 buildType 走不同的上传管线：android 收 APK，harmonyos 收 HAP。
+// 混用会被服务端拒绝或生成无法安装的条目，所以类型必须显式传，不能默认。
+func (p *pgyerClient) getCOSTokenFor(ctx context.Context, buildType string) (*cosToken, error) {
 	form := url.Values{}
 	form.Set("_api_key", p.apiKey)
-	form.Set("buildType", "android")
+	form.Set("buildType", buildType)
 	body, err := p.postForm(ctx, "https://www.pgyer.com/apiv2/app/getCOSToken", form)
 	if err != nil {
 		return nil, err
