@@ -19,6 +19,8 @@ services:
       HMOS_FILE: /app/data/hmos.json
       # JRE 已装进镜像（见 Dockerfile），java 在 /usr/bin/java
       HMOS_JAVA: /usr/bin/java
+      # 证书与 hap 的上传目录（落在持久化卷里，容器重建不丢）
+      HMOS_UPLOAD_DIR: /app/data/hmos
     ports:
       # 只绑回环，公网入口统一走 cloudflared 隧道
       - "127.0.0.1:8090:8090"

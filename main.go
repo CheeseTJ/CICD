@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type config struct {
 	HmosSignTool string // hapsigntoolv2.jar 路径（HMOS_SIGN_TOOL）
 	HmosJava     string // java 可执行文件（HMOS_JAVA），空则用 PATH 里的 java
 	HmosWarnDays int    // 剩余天数 ≤ 此值时标为「即将过期」（HMOS_WARN_DAYS，默认 30）
+	// 证书/包的上传根目录（HMOS_UPLOAD_DIR）。默认与 DATA_FILE 同级的 hmos 子目录，
+	// 这样文件落在持久化卷里，容器重建后不丢。
+	HmosUploadDir string
 }
 
 func loadConfig() *config {
@@ -60,10 +64,11 @@ func loadConfig() *config {
 			App:           getenv("USER_CENTER_APP", "cicd"),
 			AllowedEmails: splitCSV(os.Getenv("ALLOWED_EMAILS")),
 		},
-		HmosFile:     getenv("HMOS_FILE", hmosPathFromDataFile(dataFile)),
-		HmosSignTool: os.Getenv("HMOS_SIGN_TOOL"),
-		HmosJava:     os.Getenv("HMOS_JAVA"),
-		HmosWarnDays: getenvInt("HMOS_WARN_DAYS", 30),
+		HmosFile:      getenv("HMOS_FILE", hmosPathFromDataFile(dataFile)),
+		HmosSignTool:  os.Getenv("HMOS_SIGN_TOOL"),
+		HmosJava:      os.Getenv("HMOS_JAVA"),
+		HmosWarnDays:  getenvInt("HMOS_WARN_DAYS", 30),
+		HmosUploadDir: getenv("HMOS_UPLOAD_DIR", filepath.Join(filepath.Dir(dataFile), "hmos")),
 	}
 }
 
@@ -209,7 +214,11 @@ func main() {
 	mux.HandleFunc("/api/hmos/delete", s.auth.wrap(s.handleHmosDelete))
 	mux.HandleFunc("/api/hmos/resign", s.auth.wrap(s.handleHmosResign))
 	mux.HandleFunc("/api/hmos/upload", s.auth.wrap(s.handleHmosUpload))
+	mux.HandleFunc("/api/hmos/upload-file", s.auth.wrap(s.handleHmosUploadFile))
 
+	if err := os.MkdirAll(cfg.HmosUploadDir, 0o755); err != nil {
+		log.Printf("警告：创建鸿蒙上传目录 %s 失败: %v", cfg.HmosUploadDir, err)
+	}
 	s.startAutoSync()
 	s.startHmosAutoResign()
 	// 健康监控的探测在浏览器端完成，服务端只在启动/定时刷新时判定各目标是否

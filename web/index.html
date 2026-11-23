@@ -2922,6 +2922,84 @@
       return wrap;
     }
 
+    // 带「上传」按钮的字段。
+    //
+    // 证书文件原本在开发机本地（Windows 的 C:\Users\...\.ohos\config），
+    // 而服务跑在 Linux，直接填路径对用户几乎不可用 —— 除非先把文件传上去。
+    // 所以每个文件字段都带一个上传按钮：选完浏览器直接把内容 POST 到
+    // /api/hmos/upload-file，服务端落到 /app/data/hmos/<包名>/ 并回填路径。
+    function hmosFileField(label, id, kind, value, hint) {
+      const wrap = el('div');
+      wrap.appendChild(el('label', '', label));
+
+      const row = el('div');
+      row.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
+
+      const input = el('input');
+      input.type = 'text';
+      input.id = id;
+      input.value = value || '';
+      input.style.flex = '1';
+      row.appendChild(input);
+
+      const btn = el('button', 'btn');
+      btn.type = 'button';
+      btn.textContent = '上传';
+      btn.style.flex = '0 0 auto';
+      row.appendChild(btn);
+
+      // 隐藏的文件选择器（点击按钮时触发）
+      const picker = el('input');
+      picker.type = 'file';
+      picker.style.display = 'none';
+      row.appendChild(picker);
+
+      btn.onclick = () => picker.click();
+      picker.onchange = async () => {
+        const f = picker.files && picker.files[0];
+        if (!f) return;
+
+        // bundle_name 是落盘目录的依据，必须先填
+        const bundleEl = document.getElementById('hf-bundle');
+        const bundle = bundleEl ? bundleEl.value.trim() : '';
+        if (!bundle) {
+          hmosBanner('请先填写包名，再上传文件', true);
+          picker.value = '';
+          return;
+        }
+
+        const fd = new FormData();
+        fd.append('bundle_name', bundle);
+        fd.append('kind', kind);
+        fd.append('file', f);
+
+        const old = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '上传中…';
+        try {
+          const r = await api('/api/hmos/upload-file', { method: 'POST', body: fd });
+          input.value = r.path;
+          // cert/profile 上传后能立刻读到到期时间，顺手提示，省得用户再确认
+          let msg = '已上传 ' + f.name + ' → ' + r.path;
+          if (r.cert && r.cert.effective_not_after) {
+            msg += '（有效期至 ' + fmtDate(r.cert.effective_not_after) +
+              '，剩余 ' + r.cert.days_left + ' 天）';
+          }
+          hmosBanner(msg);
+        } catch (e) {
+          hmosBanner('上传失败：' + e.message, true);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = old;
+          picker.value = '';
+        }
+      };
+
+      wrap.appendChild(row);
+      if (hint) wrap.appendChild(el('div', 'hint', hint));
+      return wrap;
+    }
+
     function hmosOpenForm(app) {
       const a = app || {};
       hmosCloseForm();
@@ -2948,21 +3026,21 @@
       form.appendChild(hmosField('显示名称', 'hf-name', a.name, 'Music', '仅用于列表展示，可留空'));
 
       const row1 = el('div', 'row2');
-      row1.appendChild(hmosField('证书文件（.cer / .pem）', 'hf-cert', a.cert_file,
-        '/data/hmos/com.junet.music/cert.pem', 'AGC 下载的应用证书链'));
-      row1.appendChild(hmosField('Profile（.p7b）', 'hf-profile', a.profile_file,
-        '/data/hmos/com.junet.music/profile.p7b', 'AGC 下载的 provisioning profile'));
+      row1.appendChild(hmosFileField('证书文件（.cer / .pem）', 'hf-cert', 'cert', a.cert_file,
+        'AGC 下载的应用证书链。可直接点「上传」从本机选文件'));
+      row1.appendChild(hmosFileField('Profile（.p7b）', 'hf-profile', 'profile', a.profile_file,
+        'AGC 下载的 provisioning profile'));
       form.appendChild(row1);
 
       const row2 = el('div', 'row2');
-      row2.appendChild(hmosField('Keystore（.p12 / .jks）', 'hf-keystore', a.keystore,
-        '/data/hmos/com.junet.music/key.p12', '私钥库。换证书时**不要换它**，否则旧包重签会失败'));
+      row2.appendChild(hmosFileField('Keystore（.p12 / .jks）', 'hf-keystore', 'keystore', a.keystore,
+        '私钥库。换证书时**不要换它**，否则旧包重签会失败'));
       row2.appendChild(hmosField('KeyAlias', 'hf-alias', a.key_alias,
-        'openharmony application release', 'p12 里私钥的别名'));
+        'debugKey', 'p12 里私钥的别名，DevEco 自动签名默认是 debugKey'));
       form.appendChild(row2);
 
-      form.appendChild(hmosField('HAP 源包路径', 'hf-hap', a.hap_file,
-        '/data/hmos/com.junet.music/app.hap', '重签的输入，也是重签后的输出（原地覆盖）。先上传一次包到这里'));
+      form.appendChild(hmosFileField('HAP 源包', 'hf-hap', 'hap', a.hap_file,
+        '重签的输入，也是重签后的输出（原地覆盖）。把要续期的包传上来即可'));
 
       const checkWrap = el('div', 'hmos-check');
       const cb = el('input');
