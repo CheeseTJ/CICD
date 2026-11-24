@@ -216,6 +216,10 @@ func main() {
 	mux.HandleFunc("/api/hmos/resign", s.auth.wrap(s.handleHmosResign))
 	mux.HandleFunc("/api/hmos/upload", s.auth.wrap(s.handleHmosUpload))
 	mux.HandleFunc("/api/hmos/upload-file", s.auth.wrap(s.handleHmosUploadFile))
+	// 直接下载 HAP。不走 /api 前缀：下载要能被 <a href> 直接命中，
+	// 不希望被前端 fetch 拦截；但依然走鉴权，包里有证书信息。
+	mux.HandleFunc("/hmos/download", s.auth.wrap(s.handleHmosDownload))
+	mux.HandleFunc("/api/hmos/manifest", s.auth.wrap(s.handleHmosManifest))
 
 	if err := os.MkdirAll(cfg.HmosUploadDir, 0o755); err != nil {
 		log.Printf("警告：创建鸿蒙上传目录 %s 失败: %v", cfg.HmosUploadDir, err)

@@ -1188,7 +1188,8 @@
       activity: '<path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/>',
       zap: '<path d="M13 3 5 13.5h5.5L11 21l8-10.5h-5.5z"/>',
       trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>',
-      alert: '<path d="M12 4 2.6 20h18.8z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/>'
+      alert: '<path d="M12 4 2.6 20h18.8z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/>',
+      download: '<path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4.5 19.5h15"/>'
     };
 
     const GRADIENTS = [
@@ -3350,8 +3351,28 @@
       };
       foot.appendChild(swLabel);
 
-      // 右侧：两个次要按钮 + 主同步按钮
+      // 右侧：下载 + 两个次要按钮 + 主同步按钮
       const right = el('div', 'foot-right');
+
+      // 直接下载 HAP：绕开蒲公英的「必须是指定设备发布 Profile」限制。
+      // 用普通 <a download> 让浏览器接管下载，不经过 fetch —— 37MB 的包
+      // 走 fetch 要自己拼 Blob，反而容易在移动端出问题。
+      const dlBtn = el('button', 'btn icon-only');
+      dlBtn.innerHTML = svg('download', 16);
+      dlBtn.title = a.hap_exists
+        ? '直接下载 HAP（不经蒲公英，装到自己手机）'
+        : '尚未上传 HAP';
+      dlBtn.disabled = busy || !a.hap_exists;
+      dlBtn.onclick = () => {
+        const url = '/hmos/download?id=' + encodeURIComponent(a.id);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = '';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+      right.appendChild(dlBtn);
 
       const consoleUrl = a.huawei_console_url || hmosMeta.console_url;
       const certBtn = el('button', 'btn icon-only');
