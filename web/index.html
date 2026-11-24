@@ -232,6 +232,17 @@
       border: 1px solid rgba(239, 68, 68, 0.28);
     }
 
+    /* 待办提示（材料未上传）：中性配色，与上面的红色错误区分开 */
+    .hmos-tip {
+      margin-top: 11px; padding: 11px 13px; border-radius: 9px;
+      font-size: 12.5px; line-height: 1.6; color: var(--muted);
+      background: rgba(59, 130, 246, 0.07);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+    }
+    .hmos-tip-title {
+      color: #93b4f5; font-weight: 600; margin-bottom: 4px;
+    }
+
     .hmos-form { display: grid; gap: 12px; }
     .hmos-form label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
     .hmos-form input[type=text] {
@@ -2738,12 +2749,26 @@
       if (a.hap_file) cell('源包', a.hap_exists ? '就绪' : '缺失');
       card.appendChild(grid);
 
-      // 错误提示
+      // 提示区
+      //
+      // 区分两种情形，别把「还没上传」渲染成红色错误 —— 刚添加应用时这是
+      // 正常状态，一堆 ENOENT 只会让人以为坏了。
+      const certErrors = (a.cert && a.cert.errors) || [];
+      const notUploaded = certErrors.length > 0 && certErrors.every(e => e.includes('未配置'));
+      const missingFile = certErrors.some(e => e.includes('no such file') || e.includes('不存在'));
+
       if (a.last_error) {
+        // 真正的执行失败（重签/上传报错），红色
         card.appendChild(el('div', 'hmos-err', a.last_error));
-      }
-      if (a.cert && a.cert.errors && a.cert.errors.length) {
-        card.appendChild(el('div', 'hmos-err', a.cert.errors.join('；')));
+      } else if (notUploaded || missingFile) {
+        // 材料还没传，属于待办而非故障：给中性提示 + 明确下一步
+        const tip = el('div', 'hmos-tip');
+        tip.appendChild(el('div', 'hmos-tip-title', '尚未上传签名材料'));
+        tip.appendChild(el('div', '', '点下方「编辑」，在表单里上传证书（.cer）、Profile（.p7b）、Keystore（.p12）与 HAP 包，即可开始监控有效期。'));
+        card.appendChild(tip);
+      } else if (certErrors.length) {
+        // 文件在但解析失败（格式不对、损坏），这才是真问题
+        card.appendChild(el('div', 'hmos-err', certErrors.join('；')));
       }
 
       // 操作区
