@@ -77,7 +77,9 @@ jobs:
           HMOS_WARN_DAYS=30
           # keystore 密码。签名工具取私钥必需；未配置时重签会明确报错。
           # 从 GitHub Secrets 注入，不写进仓库。
-          HMOS_KEYSTORE_PWD=${{ secrets.HMOS_KEYSTORE_PWD }}
+          # 单引号包裹：docker-compose 读 env_file 时会做变量插值，
+          # 密码里的 $ 会被当变量引用展开成空。单引号能阻止插值。
+          HMOS_KEYSTORE_PWD='${{ secrets.HMOS_KEYSTORE_PWD }}'
           ENVEOF
           chmod 600 .env
 
