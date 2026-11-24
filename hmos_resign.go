@@ -201,31 +201,39 @@ func resignHap(ctx context.Context, cfg resignConfig, hapPath, outPath string, c
 // 单独做成一步而不是塞进 resignHap：签名成功但校验失败是有可能的（材料不匹配），
 // 分开调用能让调用方决定「校验失败是否阻断上传」。
 //
-// 参数说明（实测）：verify 必须同时给 outCertChain 与 outSignedProfile 两个
-// **输出**路径，工具会把解出来的证书链与 profile 写到那里。不给会直接报
-// "Missing parameter: outcertchain"，而不是像文档暗示的那样可选。
+// 参数名与 sign 子命令**不一致**，实测结论（官方无文档，靠试出来的）：
+//
+//	输入：-inputFile（不是 sign 的 -inputFile？sign 也是这个，但 verify 不接受 -inFile）
+//	输出：-outcertchain / -outprofile / -outproof，**全部小写**
+//
+// 写成驼峰（-outCertChain）会被判定为「未提供该参数」，报
+// "Missing parameter: outcertchain" —— 错误信息里的名字就是小写的，照着抄即可。
+// outproof 缺失只是 WARN，不给也能验，但产物解析可能不完整，所以一并给上。
 func verifyHap(ctx context.Context, cfg resignConfig, hapPath string) error {
 	java := cfg.Java
 	if java == "" {
 		java = "java"
 	}
 
-	// 这两个输出文件我们并不使用，但工具要求必须给路径。
+	// 这三个输出文件我们并不使用，但工具要求必须给路径。
 	// 放在 hap 同目录的临时文件里，调用结束即删。
 	dir := filepath.Dir(hapPath)
 	base := fmt.Sprintf(".verify-%d", time.Now().UnixNano())
 	outCert := filepath.Join(dir, base+".cer")
 	outProfile := filepath.Join(dir, base+".p7b")
+	outProof := filepath.Join(dir, base+".proof")
 	defer os.Remove(outCert)
 	defer os.Remove(outProfile)
+	defer os.Remove(outProof)
 
 	args := []string{
 		"--add-exports", "java.base/sun.security.pkcs=ALL-UNNAMED",
 		"-jar", cfg.SignTool,
 		"verify",
-		"-inFile", hapPath,
-		"-outCertChain", outCert,
-		"-outProfile", outProfile,
+		"-inputFile", hapPath,
+		"-outcertchain", outCert,
+		"-outprofile", outProfile,
+		"-outproof", outProof,
 	}
 	cmd := exec.CommandContext(ctx, java, args...)
 	out, err := cmd.CombinedOutput()
