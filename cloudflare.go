@@ -46,7 +46,6 @@ func (e *cfHTTPError) Error() string {
 	return fmt.Sprintf("Cloudflare API 错误(%d): %s", e.Status, e.Message)
 }
 
-
 // get 发起一次 GET 请求，并把 envelope 里的 result 解到 out。
 func (c *cloudflareClient) get(ctx context.Context, path string, query map[string]string, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfAPIBase+path, nil)
@@ -433,9 +432,9 @@ func (c *cloudflareClient) getWorkerService(ctx context.Context, script string) 
 //	  }
 //	}
 type cfWorkerBuild struct {
-	BuildUUID     string `json:"build_uuid"`
-	Status        string `json:"status"`        // queued | running | stopped | ...
-	BuildOutcome  string `json:"build_outcome"` // success | failure | ... （未结束为 null）
+	BuildUUID      string `json:"build_uuid"`
+	Status         string `json:"status"`        // queued | running | stopped | ...
+	BuildOutcome   string `json:"build_outcome"` // success | failure | ... （未结束为 null）
 	InitializingOn string `json:"initializing_on"`
 	RunningOn      string `json:"running_on"`
 	StoppedOn      string `json:"stopped_on"`
@@ -509,10 +508,10 @@ func (c *cloudflareClient) listWorkerBuilds(ctx context.Context, scriptTag strin
  */
 
 type cfWorkerDeployment struct {
-	ID        string `json:"id"`
-	CreatedOn string `json:"created_on"`
-	Source    string `json:"source"` // wrangler | api | ...
-	Strategy  string `json:"strategy"`
+	ID          string `json:"id"`
+	CreatedOn   string `json:"created_on"`
+	Source      string `json:"source"` // wrangler | api | ...
+	Strategy    string `json:"strategy"`
 	Annotations struct {
 		WorkersTriggeredBy string `json:"workers/triggered_by"`
 		Author             string `json:"workers/author"`
@@ -677,4 +676,3 @@ func toWorkerDeploymentView(d cfWorkerDeployment) pagesDeploymentView {
 	}
 	return vm
 }
-

@@ -230,6 +230,36 @@
       border: 1px solid rgba(239, 68, 68, 0.28);
     }
 
+    /* ---- 蒲公英无法安装的警告条 ----
+       比 hmos-err 更醒目：这是「传上去了但测试者装不上」这种哑巴亏，
+       必须让用户在点同步之前就看见。整条可点，直接跳 AGC 换 Profile。 */
+    .hmos-blocker {
+      display: flex; align-items: flex-start; gap: 7px;
+      margin-top: 11px; padding: 9px 11px; border-radius: 9px;
+      font-size: 12px; line-height: 1.5; color: #fcd34d;
+      word-break: break-word; cursor: pointer;
+      background: rgba(245, 158, 11, 0.10);
+      border: 1px solid rgba(245, 158, 11, 0.34);
+      transition: background .15s, border-color .15s;
+    }
+    .hmos-blocker:hover {
+      background: rgba(245, 158, 11, 0.16);
+      border-color: rgba(245, 158, 11, 0.5);
+    }
+    .hmos-blocker svg { flex: none; margin-top: 2px; }
+
+    /* Profile 类型徽标：debug 用琥珀色警示，release 用绿色放行 */
+    .kind-tag.ptype-debug {
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.14);
+      border-color: rgba(245, 158, 11, 0.34);
+    }
+    .kind-tag.ptype-release {
+      color: #86efac;
+      background: rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.3);
+    }
+
     /* ---- 四张材料卡：配置内嵌，点卡片直接上传 ---- */
     .mat-grid {
       display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px;
@@ -1157,7 +1187,8 @@
       play: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5z"/>',
       activity: '<path d="M3 12h3.5l2.5-6 4 12 2.5-6H21"/>',
       zap: '<path d="M13 3 5 13.5h5.5L11 21l8-10.5h-5.5z"/>',
-      trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>'
+      trash: '<path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="m6.5 7 1 13h9l1-13"/>',
+      alert: '<path d="M12 4 2.6 20h18.8z"/><path d="M12 10v4"/><path d="M12 17.2v.1"/>'
     };
 
     const GRADIENTS = [
@@ -3151,6 +3182,18 @@
       // 类型徽标：与应用卡片区分开
       const kindTag = el('span', 'kind-tag', '鸿蒙');
       nameRow.appendChild(kindTag);
+      // Profile 类型徽标：一眼看出能不能发给测试者。
+      // debug 类型的 profile 绑定 UDID 白名单，蒲公英会直接拒绝分发。
+      const ptype = a.cert && a.cert.profile_type;
+      if (ptype) {
+        const isDebug = ptype === 'debug';
+        const pt = el('span', 'kind-tag ' + (isDebug ? 'ptype-debug' : 'ptype-release'),
+          isDebug ? 'debug' : ptype);
+        pt.title = isDebug
+          ? 'debug 类型 profile 只能装到登记的 ' + ((a.cert && a.cert.profile_devices) || 0) + ' 台设备，蒲公英无法分发给其他人'
+          : 'release 类型 profile，可正常分发给测试者';
+        nameRow.appendChild(pt);
+      }
       title.appendChild(nameRow);
       title.appendChild(el('div', 'card-desc', a.bundle_name));
       top.appendChild(title);
@@ -3223,6 +3266,14 @@
       card.appendChild(grid);
 
       // 出错才占一行，正常不占空间
+      if (a.pgyer_install_blocker) {
+        const w = el('div', 'hmos-blocker');
+        w.innerHTML = svg('alert', 14);
+        w.appendChild(el('span', '', a.pgyer_install_blocker));
+        w.onclick = () => window.open(a.huawei_console_url, '_blank', 'noopener');
+        w.title = '点击去华为开发者中心更换 Profile';
+        card.appendChild(w);
+      }
       if (a.last_error) {
         card.appendChild(el('div', 'hmos-err', a.last_error));
       }

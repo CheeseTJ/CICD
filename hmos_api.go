@@ -35,6 +35,11 @@ type hmosView struct {
 	Files []materialFileView `json:"files"`
 	// HuaweiConsoleUrl 华为开发者中心，前端「跳转下载证书」按钮用
 	HuaweiConsoleUrl string `json:"huawei_console_url"`
+	// PgyerInstallBlocker 非空表示当前签名材料传上去测试者也装不上，
+	// 内容就是原因，前端直接放进警告条。
+	//
+	// 典型情况是 profile 是 debug 类型 —— 蒲公英明确拒绝这种签名。
+	PgyerInstallBlocker string `json:"pgyer_install_blocker"`
 }
 
 // huaweiAGCUrl AppGallery Connect 的证书管理页。
@@ -113,6 +118,8 @@ func buildHmosView(a *HmosApp, warnDays int, uploadRoot string) hmosView {
 			v.Files[i].NotAfter = v.Cert.ProfileNotAfter
 		}
 	}
+	// 能否从蒲公英安装：profile 为 debug 类型时必然装不上，提前告诉用户
+	v.PgyerInstallBlocker = v.Cert.pgyerInstallBlocker()
 	return v
 }
 
@@ -416,16 +423,41 @@ func (s *server) uploadHapToPgyer(ctx context.Context, app *HmosApp) (*buildInfo
 		return nil, fmt.Errorf("等待蒲公英发布失败: %w", err)
 	}
 
+	// 上传 p12：蒲公英要用它签 HAP 的安装清单（manifest.json5）。
+	//
+	// 不做这一步的话，HAP 能传上去、下载页也能打开，但页面会挂红色警告
+	// 「当前版本使用调试 Profile 签名，测试者无法通过蒲公英安装」，
+	// 测试者点安装直接失败。
+	//
+	// 失败不阻断整体流程：HAP 已经传成功了，先把 buildKey/下载页回写，
+	// 再把这个错误报出去让用户去处理证书 —— 而不是让用户重传 40MB 的包。
+	var certErr error
+	if app.Keystore != "" {
+		pwd := os.Getenv("HMOS_KEYSTORE_PWD")
+		if pwd == "" {
+			certErr = errors.New("未配置 HMOS_KEYSTORE_PWD，无法上传 p12（蒲公英将无法生成可安装的签名）")
+		} else {
+			certErr = s.pgyer.uploadHarmonyCert(ctx, info.BuildKey, app.Keystore, pwd, app.KeyAlias)
+		}
+	}
+
 	now := time.Now().Unix()
 	s.hmos.Patch(app.ID, func(a *HmosApp) {
 		a.PgyerShortcutUrl = shortcutPage(info.BuildShortcutUrl)
 		a.PgyerBuildKey = info.BuildKey
 		a.LastUploadAt = now
 		a.LastUploadVer = info.BuildVersion
-		a.LastError = ""
+		if certErr != nil {
+			a.LastError = "p12 上传失败：" + certErr.Error()
+		} else {
+			a.LastError = ""
+		}
 	})
 	if err := s.hmos.Save(); err != nil {
 		log.Printf("[hmos] 保存上传结果失败: %v", err)
+	}
+	if certErr != nil {
+		return info, certErr
 	}
 	return info, nil
 }

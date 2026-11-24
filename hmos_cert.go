@@ -85,6 +85,18 @@ type certInfo struct {
 	// BundleName 从 profile 里读出的 bundle-name，用于和 App 配置比对
 	BundleName string `json:"bundle_name"`
 
+	// ProfileType profile 的签发类型：debug / release。
+	//
+	// 这个字段决定了包能不能发给测试者：蒲公英只接受 release 类型
+	// （AppGallery Connect 里叫「指定设备发布」或企业 Profile）。
+	// debug 类型的 profile 即使签名完全正确，测试者也装不上 ——
+	// 蒲公英页面会直接标红拒绝。所以后台必须把它显式报给前端。
+	ProfileType string `json:"profile_type"`
+
+	// ProfileDevices profile 里登记的设备数量。debug 类型靠 UDID 白名单
+	// 限定安装范围，0 台意味着除了签名者自己谁也装不了。
+	ProfileDevices int `json:"profile_devices"`
+
 	// Errors 非致命解析问题（例如 profile 里读不到 bundle-name）
 	Errors []string `json:"errors,omitempty"`
 }
@@ -153,10 +165,11 @@ func parseCerts(data []byte) ([]*x509.Certificate, error) {
 
 // profileValidity 从 p7b 里读出的关键字段。
 type profileValidity struct {
-	NotBefore  int64  `json:"not-before"`
-	NotAfter   int64  `json:"not-after"`
-	BundleName string `json:"bundle-name"`
-	Type       string `json:"type"` // debug / release
+	NotBefore  int64    `json:"not-before"`
+	NotAfter   int64    `json:"not-after"`
+	BundleName string   `json:"bundle-name"`
+	Type       string   `json:"type"` // debug / release
+	DeviceIDs  []string `json:"device-ids"`
 }
 
 // parseProfileP7B 从 PKCS#7 包装里取出 profile 的 JSON 原文并解析有效期。
@@ -223,6 +236,16 @@ func decodeProfileJSON(raw []byte) (*profileValidity, error) {
 		BundleInfo struct {
 			BundleName string `json:"bundle-name"`
 		} `json:"bundle-info"`
+		// 设备清单不在顶层，而是在 debug-info 里。
+		//
+		// 实测 AGC 导出的 debug profile 结构是：
+		//   "debug-info": { "device-ids": ["B4B1..."], "device-id-type": "udid" }
+		// 顶层并没有 device-ids 字段 —— 按顶层解析会永远得到 0 台，
+		// 反而误报成「未登记任何设备」。
+		DebugInfo struct {
+			DeviceIDs    []string `json:"device-ids"`
+			DeviceIDType string   `json:"device-id-type"`
+		} `json:"debug-info"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, fmt.Errorf("解析 profile JSON 失败: %w", err)
@@ -232,6 +255,7 @@ func decodeProfileJSON(raw []byte) (*profileValidity, error) {
 		NotAfter:   v.Validity.NotAfter,
 		BundleName: v.BundleInfo.BundleName,
 		Type:       v.Type,
+		DeviceIDs:  v.DebugInfo.DeviceIDs,
 	}, nil
 }
 
@@ -271,6 +295,8 @@ func collectCertInfo(f hmosCertFile, warnDays int) *certInfo {
 		} else {
 			info.ProfileNotAfter = pv.NotAfter
 			info.BundleName = pv.BundleName
+			info.ProfileType = pv.Type
+			info.ProfileDevices = len(pv.DeviceIDs)
 		}
 	}
 
@@ -307,6 +333,44 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// pgyerInstallBlocker 判断这套签名材料能否让测试者从蒲公英安装。
+//
+// 返回非空字符串表示装不上，内容就是给用户看的原因。
+//
+// 为什么需要这个判定：HAP 上传成功 ≠ 测试者能装。蒲公英要用上传的 p12 给
+// 安装清单签名，并且只认 release 类型的 profile。debug 类型的 profile 绑定
+// 固定 UDID 白名单，蒲公英签出来的清单对普通测试者无效 —— 页面会直接标红
+//
+//	"当前版本使用调试 Profile 签名，测试者无法通过蒲公英安装"
+//
+// 这个错误在华为侧不会报，只有传到蒲公英才暴露，所以后台要提前算出来，
+// 免得用户反复重传 40MB 的包。
+func (c *certInfo) pgyerInstallBlocker() string {
+	if c == nil {
+		return "尚未上传签名材料"
+	}
+	switch c.ProfileType {
+	case "release":
+		// release 类型不限制设备，蒲公英可正常签名分发
+		return ""
+	case "debug":
+		if c.ProfileDevices == 0 {
+			return "Profile 是 debug 类型且未登记任何设备，测试者无法从蒲公英安装；" +
+				"请到 AGC 重新申请「指定设备发布」或企业 Profile"
+		}
+		return fmt.Sprintf("Profile 是 debug 类型（仅限 %d 台登记设备），测试者无法从蒲公英安装；"+
+			"请到 AGC 重新申请「指定设备发布」或企业 Profile", c.ProfileDevices)
+	case "":
+		if c.ProfileNotAfter == 0 {
+			return "尚未上传 Profile"
+		}
+		// 老版本 AGC 导出的 profile 可能不带 type 字段，无法判定，不误报
+		return ""
+	default:
+		return fmt.Sprintf("Profile 类型为 %s，蒲公英仅支持 release 类型", c.ProfileType)
+	}
 }
 
 // certStatusLabel 给日志与提示用。

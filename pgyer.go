@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -286,4 +289,113 @@ func (p *pgyerClient) listMy(ctx context.Context) ([]pgyerApp, error) {
 		return nil, fmt.Errorf("listMy 失败: code=%d message=%s", resp.Code, resp.Message)
 	}
 	return resp.Data.List, nil
+}
+
+// uploadHarmonyCert 把 p12 私钥上传给蒲公英，供它签 HAP 的安装清单。
+//
+// 为什么必须传这一步
+// ------------------
+// 蒲公英的 HarmonyOS 分发是「三段签名」模型：
+//
+//	.hap 本体      → 我们本地用 AGC 证书签（resignHap 做的）
+//	.p7b Profile   → AGC 下载，我们随包提供
+//	manifest.json5 → **蒲公英生成**，并由这里上传的 p12 签
+//
+// 缺了 p12，蒲公英能收下 HAP、也能生成下载页，但页面会挂一条红色警告
+// 「当前版本使用调试 Profile 签名，测试者无法通过蒲公英安装」—— 包根本装不上。
+//
+// 硬性约束（蒲公英要求，违反则测试者仍装不上）
+//   - p12 必须是 AGC 的**发布证书**，不能是调试证书
+//   - p7b 必须是「指定设备发布」类型，且含测试设备 UDID
+//   - p12 必须与签 .hap 用的是同一把私钥
+//
+// 接口与错误码（实测自项目里的 pgyer_upload.ps1）
+//
+//	POST https://upload.pgyer.com/apiv2/app/uploadHarmonyCert
+//	fields: _api_key / file / password / buildKey / keyAlias
+//	3006 p12 未生效或已过期  3008 密码错误或不是有效 p12  3014 该版本没有签名信息
+func (p *pgyerClient) uploadHarmonyCert(ctx context.Context, buildKey, p12Path, password, keyAlias string) error {
+	if buildKey == "" {
+		return errors.New("缺少 buildKey，无法上传证书")
+	}
+	if p12Path == "" {
+		return errors.New("未配置 p12 路径")
+	}
+
+	f, err := os.Open(p12Path)
+	if err != nil {
+		return fmt.Errorf("打开 p12 失败: %w", err)
+	}
+	defer f.Close()
+
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+
+	fields := [][2]string{
+		{"_api_key", p.apiKey},
+		{"password", password},
+		{"buildKey", buildKey},
+	}
+	if keyAlias != "" {
+		fields = append(fields, [2]string{"keyAlias", keyAlias})
+	}
+	for _, kv := range fields {
+		if err := mw.WriteField(kv[0], kv[1]); err != nil {
+			return err
+		}
+	}
+
+	// 文件名用 p12 原名：蒲公英只按内容解析，名字仅供人工排查
+	part, err := mw.CreateFormFile("file", filepath.Base(p12Path))
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return err
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://upload.pgyer.com/apiv2/app/uploadHarmonyCert", body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("上传 p12 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return err
+	}
+
+	var out struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	// 服务端可能返回非 JSON（网关错误页），此时按状态码报错
+	if err := json.Unmarshal(raw, &out); err != nil {
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("上传 p12 失败: %s: %s", resp.Status,
+				strings.TrimSpace(string(raw)))
+		}
+		return fmt.Errorf("上传 p12 返回无法解析: %s", strings.TrimSpace(string(raw)))
+	}
+
+	if out.Code != 0 {
+		hint := map[int]string{
+			3006: "（p12 尚未生效或已过期）",
+			3008: "（密码错误或不是有效 p12）",
+			3014: "（该版本没有签名信息）",
+		}[out.Code]
+		return fmt.Errorf("上传 p12 失败: code=%d message=%s%s",
+			out.Code, out.Message, hint)
+	}
+	return nil
 }
