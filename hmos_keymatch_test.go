@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,36 +168,131 @@ func TestVerifyKeyPairCacheInvalidatesOnFileChange(t *testing.T) {
 	_ = p12b
 }
 
-// leafPublicKey 要能从多张证书的链里挑出叶子，而不是错拿根 CA 的公钥。
-// 拿错了会导致所有配对都判 mismatch —— 比不校验更糟。
-func TestLeafPublicKeyPicksLeafFromChain(t *testing.T) {
+// 真实证书链测试：用 openssl 现场生成「根 CA → 中间 CA → 叶子」三段链。
+//
+// 这是修复的那个 bug 的核心场景。AGC 导出的链就是这个形状，而修复前的
+// 实现用「第一个 Subject != Issuer」找叶子，会命中中间 CA —— 真配对
+// 被误判成 mismatch，用户会以为证书白申请了。
+func TestLeafPublicKeyRealCAChain(t *testing.T) {
 	dir := t.TempDir()
-	_, cer := makeKeyPairWithCert(t, dir, "k1")
-	leaf, err := os.ReadFile(cer)
-	if err != nil {
+
+	// 根 CA（自签名）
+	rootKey := filepath.Join(dir, "root.key")
+	rootCrt := filepath.Join(dir, "root.crt")
+	runOpenSSL(t, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", rootKey)
+	runOpenSSL(t, "req", "-x509", "-new", "-key", rootKey, "-sha256", "-days", "3650",
+		"-out", rootCrt, "-subj", "/CN=Test Root CA/O=Test/C=CN")
+
+	// 中间 CA（根签的）
+	intKey := filepath.Join(dir, "int.key")
+	intCsr := filepath.Join(dir, "int.csr")
+	intCrt := filepath.Join(dir, "int.crt")
+	runOpenSSL(t, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", intKey)
+	runOpenSSL(t, "req", "-new", "-key", intKey, "-out", intCsr,
+		"-subj", "/CN=Test Intermediate CA/O=Test/C=CN")
+
+	extFile := filepath.Join(dir, "ca.ext")
+	if err := os.WriteFile(extFile, []byte("basicConstraints=critical,CA:TRUE\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runOpenSSL(t, "x509", "-req", "-in", intCsr, "-CA", rootCrt, "-CAkey", rootKey,
+		"-CAcreateserial", "-days", "3000", "-sha256", "-extfile", extFile, "-out", intCrt)
+
+	// 叶子（中间签的）
+	leafKey := filepath.Join(dir, "leaf.key")
+	leafCsr := filepath.Join(dir, "leaf.csr")
+	leafCrt := filepath.Join(dir, "leaf.crt")
+	runOpenSSL(t, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", leafKey)
+	runOpenSSL(t, "req", "-new", "-key", leafKey, "-out", leafCsr,
+		"-subj", "/CN=Test Leaf,Release/O=Test/C=CN")
+	runOpenSSL(t, "x509", "-req", "-in", leafCsr, "-CA", intCrt, "-CAkey", intKey,
+		"-CAcreateserial", "-days", "1095", "-sha256", "-out", leafCrt)
+
+	// 叶子公钥作为期望值
+	want := pubKeyDER(t, leafCrt)
+
+	// 按 AGC 的顺序拼链：根 → 中间 → 叶子
+	var chain []byte
+	for _, f := range []string{rootCrt, intCrt, leafCrt} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, b...)
+	}
+	chainFile := filepath.Join(dir, "chain.cer")
+	if err := os.WriteFile(chainFile, chain, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// 在叶子后面追加一张无关的根证书，模拟「叶子→中间→根」的链文件
-	_, otherCer := makeKeyPairWithCert(t, dir, "other")
-	root, err := os.ReadFile(otherCer)
+	got, err := leafPublicKey(chainFile)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("解析链失败: %v", err)
 	}
-	chain := filepath.Join(dir, "chain.cer")
-	if err := os.WriteFile(chain, append(append([]byte{}, leaf...), root...), 0o600); err != nil {
+	if string(got) != string(want) {
+		t.Error("应取叶子公钥，实际取到了中间 CA 或根 CA —— 这会导致配对误判 mismatch")
+	}
+}
+
+// 顺序颠倒（叶子 → 中间 → 根）也必须取到叶子，不能靠位置猜。
+func TestLeafPublicKeyReversedChain(t *testing.T) {
+	dir := t.TempDir()
+	rootKey := filepath.Join(dir, "root.key")
+	rootCrt := filepath.Join(dir, "root.crt")
+	runOpenSSL(t, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", rootKey)
+	runOpenSSL(t, "req", "-x509", "-new", "-key", rootKey, "-sha256", "-days", "3650",
+		"-out", rootCrt, "-subj", "/CN=Test Root CA/O=Test/C=CN")
+
+	objKey := filepath.Join(dir, "obj.key")
+	objCsr := filepath.Join(dir, "obj.csr")
+	objCrt := filepath.Join(dir, "obj.crt")
+	runOpenSSL(t, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", objKey)
+	runOpenSSL(t, "req", "-new", "-key", objKey, "-out", objCsr,
+		"-subj", "/CN=Test Object Release/O=Test/C=CN")
+	runOpenSSL(t, "x509", "-req", "-in", objCsr, "-CA", rootCrt, "-CAkey", rootKey,
+		"-CAcreateserial", "-days", "1095", "-sha256", "-out", objCrt)
+
+	want := pubKeyDER(t, objCrt)
+
+	// 反序：叶子在前，根在后
+	var chain []byte
+	for _, f := range []string{objCrt, rootCrt} {
+		b, _ := os.ReadFile(f)
+		chain = append(chain, b...)
+	}
+	chainFile := filepath.Join(dir, "rev.cer")
+	if err := os.WriteFile(chainFile, chain, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	pubChain, err := leafPublicKey(chain)
+	got, err := leafPublicKey(chainFile)
 	if err != nil {
-		t.Fatalf("解析证书链失败: %v", err)
+		t.Fatalf("解析失败: %v", err)
 	}
-	pubLeaf, err := leafPublicKey(cer)
+	if string(got) != string(want) {
+		t.Error("反序链也应取到叶子公钥")
+	}
+}
+
+func runOpenSSL(t *testing.T, args ...string) {
+	t.Helper()
+	out, err := exec.Command("openssl", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("解析单张证书失败: %v", err)
+		t.Fatalf("openssl %v 失败: %v\n%s", args, err, out)
 	}
-	if string(pubChain) != string(pubLeaf) {
-		t.Error("链文件里应取叶子证书公钥，实际取到了别的证书")
+}
+
+func pubKeyDER(t *testing.T, certFile string) []byte {
+	t.Helper()
+	out, err := exec.Command("openssl", "x509", "-in", certFile, "-noout", "-pubkey").Output()
+	if err != nil {
+		t.Fatalf("读 %s 公钥失败: %v", certFile, err)
 	}
+	cmd := exec.Command("openssl", "pkey", "-pubin", "-outform", "DER")
+	cmd.Stdin = bytes.NewReader(out)
+	d, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("公钥转 DER 失败: %v", err)
+	}
+	return d
 }

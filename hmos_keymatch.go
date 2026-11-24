@@ -118,9 +118,21 @@ func fileFingerprint(path string) (string, bool) {
 
 // leafPublicKey 从证书文件里取叶子证书的公钥，返回 PKIX DER。
 //
-// 「叶子」判定：AGC 导出的链是「叶子 → 中间 → 根」，叶子 subject 与
-// issuer 不同且不是自签名。这里取第一个非自签名证书；如果全部是
-// 自签名（单张证书文件很常见），就用第一张。
+// 找叶子的两个判据，按可靠性排序：
+//
+//  1. **IsCA == false**（首选）。叶子是终端实体证书，BasicConstraints 里
+//     不带 CA:TRUE；根 CA 和中间 CA 都带。这是 X.509 里唯一无歧义的判据。
+//
+//  2. 兜底：取最后一张。如果链里每张都标了 CA（某些自签名单证书文件、
+//     或不规范的导出），退回位置猜测 —— AGC 的导出顺序里叶子在末尾。
+//
+// 为什么不能用「Subject != Issuer」或「没被其它证书签发」：
+//   - 中间 CA 的 Subject 也 != Issuer（它是根签的），会被误判成叶子。
+//     实测踩到过：真实 Release 证书 + 真实 p12 公钥完全一致，却报
+//     「不是一对」，用户会以为证书白申请了。
+//   - 完整链里叶子确实是被中间 CA 签发的，所以「没被签发」在整链上
+//     对叶子不成立，反而不命中；反倒是根 CA 因为自签名被排除后，
+//     会被错选。
 func leafPublicKey(certPath string) ([]byte, error) {
 	data, err := os.ReadFile(certPath)
 	if err != nil {
@@ -133,18 +145,25 @@ func leafPublicKey(certPath string) ([]byte, error) {
 	if len(certs) == 0 {
 		return nil, errors.New("证书文件里没有证书")
 	}
-	leaf := certs[0]
-	for _, c := range certs {
-		if c.Subject.String() != c.Issuer.String() {
-			leaf = c
-			break
-		}
-	}
+
+	leaf := pickLeaf(certs)
 	der, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("序列化公钥失败: %w", err)
 	}
 	return der, nil
+}
+
+// pickLeaf 从证书列表里挑出终端实体证书。
+func pickLeaf(certs []*x509.Certificate) *x509.Certificate {
+	// 判据 1：非 CA 的就是叶子。链里通常只有一张。
+	for _, c := range certs {
+		if !c.IsCA {
+			return c
+		}
+	}
+	// 判据 2：全是 CA（单张自签名证书最常见），取最后一张
+	return certs[len(certs)-1]
 }
 
 // keystorePublicKey 用 keytool 读出 p12 里指定别名的证书公钥。
