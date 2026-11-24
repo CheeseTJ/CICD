@@ -40,6 +40,11 @@ type hmosView struct {
 	//
 	// 典型情况是 profile 是 debug 类型 —— 蒲公英明确拒绝这种签名。
 	PgyerInstallBlocker string `json:"pgyer_install_blocker"`
+	// KeyMatch 证书与 keystore 是否配对。
+	//
+	// 不配对意味着重签一定会失败，而且 AGC 和本控制台都不会提前报错 ——
+	// 只能在这里主动比对公钥发现。
+	KeyMatch keyMatchResult `json:"key_match"`
 }
 
 // huaweiAGCUrl AppGallery Connect 的证书管理页。
@@ -83,6 +88,14 @@ type materialFileView struct {
 
 // buildHmosView 把存储里的 App 补全为前端视图。
 func buildHmosView(a *HmosApp, warnDays int, uploadRoot string) hmosView {
+	return buildHmosViewWithKey(a, warnDays, uploadRoot, "", "")
+}
+
+// buildHmosViewWithKey 与 buildHmosView 相同，额外交验证书与 keystore 的配对。
+//
+// password = "" 时跳过校验（返回 unknown）—— 运维没配密码时不阻断页面，
+// 只是卡片上不显示配对结论。
+func buildHmosViewWithKey(a *HmosApp, warnDays int, uploadRoot, password, javaHome string) hmosView {
 	v := hmosView{HmosApp: *a, HuaweiConsoleUrl: huaweiAGCUrl}
 
 	// 路径一律由包名推导，忽略存储里的旧值 —— 老数据可能存的是用户手填的
@@ -120,6 +133,9 @@ func buildHmosView(a *HmosApp, warnDays int, uploadRoot string) hmosView {
 	}
 	// 能否从蒲公英安装：profile 为 debug 类型时必然装不上，提前告诉用户
 	v.PgyerInstallBlocker = v.Cert.pgyerInstallBlocker()
+
+	// 证书与 keystore 的配对校验：不匹配则重签必然失败，必须提前报
+	v.KeyMatch = verifyKeyPair(certPath, keyPath, password, a.KeyAlias, javaHome)
 	return v
 }
 
@@ -161,7 +177,7 @@ func (s *server) handleHmosList(w http.ResponseWriter, r *http.Request) {
 	apps := s.hmos.List()
 	out := make([]hmosView, 0, len(apps))
 	for _, a := range apps {
-		out = append(out, buildHmosView(a, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir))
+		out = append(out, buildHmosViewWithKey(a, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir, os.Getenv("HMOS_KEYSTORE_PWD"), s.cfg.HmosJava))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"apps": out,
@@ -237,7 +253,7 @@ func (s *server) handleHmosUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved, _ := s.hmos.Get(id)
-	writeJSON(w, http.StatusOK, buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir))
+	writeJSON(w, http.StatusOK, buildHmosViewWithKey(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir, os.Getenv("HMOS_KEYSTORE_PWD"), s.cfg.HmosJava))
 }
 
 // handleHmosDelete POST /api/hmos/delete
@@ -309,7 +325,7 @@ func (s *server) handleHmosResign(w http.ResponseWriter, r *http.Request) {
 
 	saved, _ := s.hmos.Get(app.ID)
 	writeJSON(w, http.StatusOK, hmosResignResult{
-		App:     buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir),
+		App:     buildHmosViewWithKey(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir, os.Getenv("HMOS_KEYSTORE_PWD"), s.cfg.HmosJava),
 		Resign:  res,
 		Verify:  true,
 		Message: "重签成功",
@@ -399,7 +415,7 @@ func (s *server) handleHmosUpload(w http.ResponseWriter, r *http.Request) {
 
 	saved, _ := s.hmos.Get(app.ID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"app":        buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir),
+		"app":        buildHmosViewWithKey(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir, os.Getenv("HMOS_KEYSTORE_PWD"), s.cfg.HmosJava),
 		"build_key":  info.BuildKey,
 		"page_url":   shortcutPage(info.BuildShortcutUrl),
 		"qr_code":    info.BuildQRCodeURL,

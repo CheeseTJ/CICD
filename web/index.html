@@ -3280,6 +3280,16 @@
       card.appendChild(grid);
 
       // 出错才占一行，正常不占空间
+      //
+      // 顺序有讲究：先报配错（最致命，改不了就永远签不成），再报蒲公英装不
+      // 上的问题（能签但发不出去）。用户从上往下看就是修复顺序。
+      if (a.key_match && a.key_match.status === 'mismatch') {
+        const w = el('div', 'hmos-blocker');
+        w.innerHTML = svg('alert', 14);
+        w.appendChild(el('span', '', a.key_match.detail));
+        w.title = '证书与 keystore 不配对，重签会失败';
+        card.appendChild(w);
+      }
       if (a.pgyer_install_blocker) {
         const w = el('div', 'hmos-blocker');
         w.innerHTML = svg('alert', 14);
