@@ -28,6 +28,11 @@ type hmosView struct {
 	Cert *certInfo `json:"cert"`
 	// HapExists 源包是否还在，不在则无法重签
 	HapExists bool `json:"hap_exists"`
+	// Files 四个签名材料的逐个状态，卡片直接渲染成四张小卡。
+	//
+	// 之所以在后端算而不是前端推导：文件是否存在、扩展名是什么（上传时按内容
+	// 决定，可能是 .cer 也可能是 .pem）只有服务端知道。
+	Files []materialFileView `json:"files"`
 	// HuaweiConsoleUrl 华为开发者中心，前端「跳转下载证书」按钮用
 	HuaweiConsoleUrl string `json:"huawei_console_url"`
 }
@@ -39,21 +44,109 @@ type hmosView struct {
 const huaweiAGCUrl = "https://developer.huawei.com/consumer/cn/service/josp/agc/index.html#/myProject"
 
 // buildHmosView 把存储里的 App 补全为前端视图。
-func buildHmosView(a *HmosApp, warnDays int) hmosView {
+// hmosAppPaths 按包名推导出四个文件的固定路径。
+//
+// 为什么固定路径而不是让用户填：
+//  1. 配置项从 4 个降到 0 个 —— 用户只需要「点上传」这一件事，不会因为路径
+//     打错（大小写、相对/绝对、Windows 反斜杠）而卡住。
+//  2. 上传接口本来就是把文件写到 <root>/<bundleName>/ 下，两边规则一致，
+//     不存在「传上去了但配置指向别处」这种不一致状态。
+//  3. 换证书时只要重新上传覆盖同名文件，不需要改任何配置。
+func hmosAppPaths(root, bundle string) (cert, profile, keystore, hap string) {
+	dir := filepath.Join(root, bundle)
+	return filepath.Join(dir, "cert.cer"),
+		filepath.Join(dir, "profile.p7b"),
+		filepath.Join(dir, "key.p12"),
+		filepath.Join(dir, "app.hap")
+}
+
+// materialFileView 单个材料文件在卡片上的状态。
+type materialFileView struct {
+	// Kind 上传接口用的类型标识：cert / profile / keystore / hap
+	Kind string `json:"kind"`
+	// Label 展示名
+	Label string `json:"label"`
+	// Present 文件是否已上传
+	Present bool `json:"present"`
+	// Size 字节数，0 表示不存在
+	Size int64 `json:"size"`
+	// NotAfter 该文件的到期时间（仅 cert/profile 有），0 表示未知
+	NotAfter int64 `json:"not_after"`
+	// Name 实际文件名（含扩展名，扩展名由上传内容决定）
+	Name string `json:"name"`
+}
+
+// buildHmosView 把存储里的 App 补全为前端视图。
+func buildHmosView(a *HmosApp, warnDays int, uploadRoot string) hmosView {
 	v := hmosView{HmosApp: *a, HuaweiConsoleUrl: huaweiAGCUrl}
-	// 证书字段用指针，未配置时前端显示「未配置」而不是零值时间
+
+	// 路径一律由包名推导，忽略存储里的旧值 —— 老数据可能存的是用户手填的
+	// 任意路径，继续用会让「固定路径」这个约定失效。
+	certPath, profPath, keyPath, hapPath := hmosAppPaths(uploadRoot, a.BundleName)
+	a.CertFile, a.ProfileFile, a.Keystore, a.HapFile = certPath, profPath, keyPath, hapPath
+	v.CertFile, v.ProfileFile, v.Keystore, v.HapFile = certPath, profPath, keyPath, hapPath
+
 	v.Cert = collectCertInfo(hmosCertFile{
-		CertFile:    a.CertFile,
-		ProfileFile: a.ProfileFile,
-		Keystore:    a.Keystore,
+		CertFile:    certPath,
+		ProfileFile: profPath,
+		Keystore:    keyPath,
 		KeyAlias:    a.KeyAlias,
 	}, warnDays)
-	if a.HapFile != "" {
-		if _, err := os.Stat(a.HapFile); err == nil {
-			v.HapExists = true
+
+	if _, err := os.Stat(hapPath); err == nil {
+		v.HapExists = true
+	}
+
+	// 四个材料文件的逐个状态，供卡片直接渲染成四张小卡
+	v.Files = []materialFileView{
+		fileStat("cert", "证书", certPath),
+		fileStat("keystore", "Keystore", keyPath),
+		fileStat("profile", "Profile", profPath),
+		fileStat("hap", "HAP 包", hapPath),
+	}
+	// 从证书解析结果里补上有效期（fileStat 只关心文件本身）
+	for i := range v.Files {
+		switch v.Files[i].Kind {
+		case "cert":
+			v.Files[i].NotAfter = v.Cert.CertNotAfter
+		case "profile":
+			v.Files[i].NotAfter = v.Cert.ProfileNotAfter
 		}
 	}
 	return v
+}
+
+// fileStat 读取单个文件的存在性与大小。
+//
+// 上传时扩展名由内容决定（.cer 可能存成 .pem），所以这里按「同主体名 + 任意
+// 允许扩展名」找文件，而不是硬编码某个后缀。
+func fileStat(kind, label, canonical string) materialFileView {
+	f := materialFileView{Kind: kind, Label: label, Name: filepath.Base(canonical)}
+	if fi, err := os.Stat(canonical); err == nil {
+		f.Present = true
+		f.Size = fi.Size()
+		return f
+	}
+	// canonical 不存在时，扫同目录找同主体名（cert.* / key.* / ...）的文件
+	base := strings.TrimSuffix(filepath.Base(canonical), filepath.Ext(canonical))
+	dir := filepath.Dir(canonical)
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			n := e.Name()
+			if strings.HasPrefix(n, base+".") && !strings.HasSuffix(n, ".part") {
+				if info, err := e.Info(); err == nil {
+					f.Present = true
+					f.Size = info.Size()
+					f.Name = n
+					return f
+				}
+			}
+		}
+	}
+	return f
 }
 
 // handleHmosList GET /api/hmos
@@ -61,7 +154,7 @@ func (s *server) handleHmosList(w http.ResponseWriter, r *http.Request) {
 	apps := s.hmos.List()
 	out := make([]hmosView, 0, len(apps))
 	for _, a := range apps {
-		out = append(out, buildHmosView(a, s.cfg.HmosWarnDays))
+		out = append(out, buildHmosView(a, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir))
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"apps": out,
@@ -137,7 +230,7 @@ func (s *server) handleHmosUpsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved, _ := s.hmos.Get(id)
-	writeJSON(w, http.StatusOK, buildHmosView(saved, s.cfg.HmosWarnDays))
+	writeJSON(w, http.StatusOK, buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir))
 }
 
 // handleHmosDelete POST /api/hmos/delete
@@ -209,7 +302,7 @@ func (s *server) handleHmosResign(w http.ResponseWriter, r *http.Request) {
 
 	saved, _ := s.hmos.Get(app.ID)
 	writeJSON(w, http.StatusOK, hmosResignResult{
-		App:     buildHmosView(saved, s.cfg.HmosWarnDays),
+		App:     buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir),
 		Resign:  res,
 		Verify:  true,
 		Message: "重签成功",
@@ -299,7 +392,7 @@ func (s *server) handleHmosUpload(w http.ResponseWriter, r *http.Request) {
 
 	saved, _ := s.hmos.Get(app.ID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"app":        buildHmosView(saved, s.cfg.HmosWarnDays),
+		"app":        buildHmosView(saved, s.cfg.HmosWarnDays, s.cfg.HmosUploadDir),
 		"build_key":  info.BuildKey,
 		"page_url":   shortcutPage(info.BuildShortcutUrl),
 		"qr_code":    info.BuildQRCodeURL,

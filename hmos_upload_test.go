@@ -155,3 +155,58 @@ func TestUploadReturnsCertInfo(t *testing.T) {
 		t.Errorf("100 天应为 ok 状态，got: %s", body)
 	}
 }
+
+// 各类材料的后缀白名单必须与服务端一致。
+//
+// 同类错误（把 .apk 当证书传）如果只在服务端拒，用户要等一次网络往返才知道；
+// 前端多校验一次能立刻提示。两边规则必须同步，否则会出现「前端放过、后端拒」
+// 或更糟的「前端拒、后端其实支持」。
+func TestUploadExtWhitelist(t *testing.T) {
+	allowed := map[string][]string{
+		"cert":     {".cer", ".pem", ".crt"},
+		"profile":  {".p7b", ".p7c"},
+		"keystore": {".p12", ".jks", ".pfx"},
+		"hap":      {".hap"},
+	}
+
+	allExts := []string{".cer", ".pem", ".crt", ".p7b", ".p7c", ".p12", ".jks", ".pfx", ".hap",
+		".apk", ".zip", ".txt", ".exe", ""}
+
+	for kind, oks := range allowed {
+		okSet := map[string]bool{}
+		for _, e := range oks {
+			okSet[e] = true
+		}
+		for _, ext := range allExts {
+			want := okSet[ext]
+			if got := allowedExtFor(kind, ext); got != want {
+				t.Errorf("allowedExtFor(%q, %q) = %v, want %v", kind, ext, got, want)
+			}
+		}
+	}
+}
+
+// 把 apk 当证书上传必须被拒，且错误信息要说清可用格式。
+func TestUploadRejectsApkAsCert(t *testing.T) {
+	s, _ := newUploadServer(t)
+	rec := httptest.NewRecorder()
+	s.handleHmosUploadFile(rec, buildUploadReq(t, "com.a.b", "cert", "app.apk", []byte("x")))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("应拒绝 .apk 当证书，got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, ".cer") {
+		t.Errorf("错误信息应列出可用格式，got: %s", body)
+	}
+}
+
+// 把 hap 当 profile 上传必须被拒。
+func TestUploadRejectsHapAsProfile(t *testing.T) {
+	s, _ := newUploadServer(t)
+	rec := httptest.NewRecorder()
+	s.handleHmosUploadFile(rec, buildUploadReq(t, "com.a.b", "profile", "app.hap", []byte("x")))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("应拒绝 .hap 当 profile，got %d", rec.Code)
+	}
+}

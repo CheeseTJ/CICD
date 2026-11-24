@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -248,6 +249,25 @@ func main() {
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// 用内容哈希做 ETag，配合 no-cache 让浏览器每次都回来问一次。
+	//
+	// 为什么必须显式处理：之前不设任何缓存头，浏览器按启发式规则自行缓存
+	// HTML，导致部署后用户刷新看到的还是旧页面 —— 排查起来极其费时
+	// （服务端明明已经改了，浏览器就是不给新内容）。
+	//
+	// no-cache 不是「不缓存」，而是「缓存但每次必须校验」。命中 ETag 时只回
+	// 304 空响应，开销很小；内容一变（重新构建二进制）ETag 跟着变，浏览器
+	// 立刻拿到新页面。
+	etag := fmt.Sprintf(`W/"%x"`, sha256.Sum256(indexHTML))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	_, _ = w.Write(indexHTML)
 }
 

@@ -25,6 +25,7 @@ package main
 // 否则 cert 与私钥不匹配）。
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -180,28 +181,29 @@ func parseProfileP7B(path string) (*profileValidity, error) {
 }
 
 // extractProfileJSON 从 PKCS#7 DER 里定位那段 JSON。
+//
+// 不能用「最后一个 } 就是结尾」这种启发式：p7b 的签名块是二进制，里面
+// 完全可能出现 0x7D（'}'）字节。实测 AGC 导出的真实 profile 就会踩到 ——
+// 尾部签名数据里有个 '}'，导致截出的片段后面跟着一堆乱码，解析报
+// "invalid character '\u00a0' after top-level value"（错误信息完全不指向
+// 真实原因，很容易误判成编码问题）。
+//
+// 正确做法：找到起点后用 json.Decoder 逐层解码，它天然知道 JSON 在哪里结束，
+// 且能跳过尾部垃圾字节。json.Decoder 会读入缓冲区，所以不用担心中间截断。
 func extractProfileJSON(data []byte) ([]byte, error) {
-	start := -1
-	for i, b := range data {
-		if b == '{' {
-			start = i
-			break
-		}
-	}
+	start := bytes.IndexByte(data, '{')
 	if start < 0 {
 		return nil, errors.New("p7b 里找不到 profile JSON 起始位置")
 	}
-	// 从 last '}' 往前找，配对第一个 '{'：JSON 原文是整段连续的
-	end := -1
-	for i := len(data) - 1; i > start; i-- {
-		if data[i] == '}' {
-			end = i + 1
-			break
-		}
+
+	// 用 Decoder 解析一份到 RawMessage，借此得到「JSON 实际消耗到哪里」。
+	// 注意不能用 Decoder.InputOffset() 之外的偏移猜测 —— offset 是精确的。
+	dec := json.NewDecoder(bytes.NewReader(data[start:]))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("p7b 里的 profile JSON 不完整: %w", err)
 	}
-	if end <= start {
-		return nil, errors.New("p7b 里找不到 profile JSON 结束位置")
-	}
+	end := start + int(dec.InputOffset())
 	return data[start:end], nil
 }
 

@@ -286,3 +286,55 @@ func TestHmosStoreGetReturnsCopy(t *testing.T) {
 		t.Errorf("Get 应返回副本，内部状态被污染: %q", again.Name)
 	}
 }
+
+// p7b 尾部的签名块是二进制，里面可能含 '}' 字节。
+//
+// 之前的实现用「最后一个 '}' 就是 JSON 结尾」这种启发式，遇到真实 AGC
+// profile 时截出的片段带着尾部乱码，报
+// "invalid character '\u00a0' after top-level value" —— 这个错误信息
+// 完全不指向真实原因（用户会以为是编码或空格问题）。
+//
+// 这个测试用真实文件的结构复现：JSON 后面跟一段含 0x7D 的二进制。
+func TestParseProfileWithBinaryTailContainingBrace(t *testing.T) {
+	dir := t.TempDir()
+	notAfter := time.Now().Add(200 * 24 * time.Hour).Unix()
+
+	payload := map[string]interface{}{
+		"version-name": "2.0.0",
+		"version-code": 2,
+		"validity": map[string]int64{
+			"not-before": notAfter - 365*86400,
+			"not-after":  notAfter,
+		},
+		"type": "debug",
+		"bundle-info": map[string]interface{}{
+			"bundle-name": "com.junet.music",
+			"device-ids":  []string{"AABBCC"},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 构造：DER头 + JSON + 含 '}' 与 0xA0 的签名块
+	blob := []byte{0x30, 0x82, 0x01, 0x00}
+	blob = append(blob, body...)
+	blob = append(blob, 0x7D, 0xC2, 0xA0, 0x00, 0x7D, 0x7D, 0xFF)
+
+	path := filepath.Join(dir, "real-like.p7b")
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pv, err := parseProfileP7B(path)
+	if err != nil {
+		t.Fatalf("含 '}' 的尾部不应导致解析失败: %v", err)
+	}
+	if pv.NotAfter != notAfter {
+		t.Errorf("not-after 不符: got %d want %d", pv.NotAfter, notAfter)
+	}
+	if pv.BundleName != "com.junet.music" {
+		t.Errorf("bundle-name 不符: got %q", pv.BundleName)
+	}
+}
