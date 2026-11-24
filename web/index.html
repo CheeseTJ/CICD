@@ -3245,6 +3245,12 @@
             onClick: () => window.open(a.pgyer_shortcut_url, '_blank', 'noopener')
           },
           {
+            // keystore 里的密钥别名。换 p12 时别名常常跟着变，
+            // 而重签和配对校验都要用它 —— 目前没有其它修改入口。
+            icon: 'gear', label: '设置密钥别名（当前：' + (a.key_alias || '未设置') + '）',
+            onClick: () => hmosEditAlias(a)
+          },
+          {
             icon: 'trash', label: '从我的应用移除', danger: true,
             onClick: () => hmosDelete(a)
           }
@@ -3510,6 +3516,38 @@
       } finally {
         hmosBusy[id] = '';
         render();
+      }
+    }
+
+    // 修改密钥别名。
+    //
+    // 为什么需要这个入口：别名是 p12 内部的「钥匙标签」，重签时 hapsigntool
+    // 靠它定位私钥，配对校验也靠它取公钥。换新 p12 时别名常常跟着变（
+    // DevEco 自动签名用 debugKey，手动创建时用户可能起别的名字），
+    // 而之前这里只能改配置文件，页面上没有入口。
+    //
+    // 用 prompt 而不是自定义弹窗：只有一个字段，做成一整个模态框不划算。
+    async function hmosEditAlias(a) {
+      const cur = a.key_alias || '';
+      const v = prompt(
+        '密钥别名（keyAlias）\n\n' +
+        '这是 p12 内部的私钥标签，不是文件名。\n' +
+        'DevEco 自动签名默认 debugKey，手动创建时用你当时填的 Alias。',
+        cur);
+      if (v === null) return;
+      const alias = v.trim();
+      if (!alias) { hmosBanner('别名不能为空', true); return; }
+      if (alias === cur) return;
+      try {
+        await api('/api/hmos/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: a.id, key_alias: alias })
+        });
+        hmosToast('别名已改为「' + alias + '」', 'ok');
+        await loadHmos(true);
+      } catch (e) {
+        hmosBanner('保存失败：' + e.message, true);
       }
     }
 
