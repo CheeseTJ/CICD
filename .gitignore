@@ -3,6 +3,25 @@
 data/
 data.json
 
+# 鸿蒙签名材料与上传的包 —— 绝不可入库
+#
+# hmos/ 里会落盘 AGC 证书（.cer）、profile（.p7b）、keystore（.p12，含私钥）
+# 以及重签用的 HAP。私钥一旦提交到公开仓库，等于把应用签名权交出去，
+# 且 git 历史清不干净（force push 也救不回已经泄露的副本）。
+#
+# 只忽略根目录下的这两个，用前导 / 定位：
+# 不加 / 的话 `hmos/` 会匹配任意层级，虽然目前不影响 hmos_*.go 源码，
+# 但以后若有子目录叫 hmos 会被误伤。
+/hmos/
+/hmos.json
+# 重签/校验过程的临时文件（签名工具输出）
+*.hap.part
+.resign-*.hap
+.verify-*
+
 # 本地编译产物
 cicd-console
 /cicd
+/cicd-dev
+.dev.pid
+dev.log
