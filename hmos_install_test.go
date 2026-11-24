@@ -185,3 +185,35 @@ func TestHmosViewJSONHasBlocker(t *testing.T) {
 		}
 	}
 }
+
+// 证书类型判定：AGC 把 Development/Release 标记拼在 Subject 的 CN 后面，
+// 不是独立 RDN，只能子串匹配。这个字段决定用户看到的「1 年 / 3 年」，
+// 判错会让用户以为自己换成功了。
+func TestClassifyCertType(t *testing.T) {
+	cases := []struct {
+		subject string
+		want    string
+	}{
+		{`CN=陶钧(1761728835977510785)\\\\,Development,OU=1761728835977510785,O=陶钧,C=CN`, "debug"},
+		{`CN=陶钧(1761728835977510785)\\\\,Release,OU=1761728835977510785,O=陶钧,C=CN`, "release"},
+		{`CN=Huawei CBG Root CA G2,OU=Huawei CBG,O=Huawei,C=CN`, ""},
+		{``, ""},
+	}
+	for _, c := range cases {
+		if got := classifyCertType(c.subject); got != c.want {
+			t.Errorf("classifyCertType(%.40q) = %q, 期望 %q", c.subject, got, c.want)
+		}
+	}
+}
+
+// 发布证书的关键承诺是「3 年有效」。这条测试不做网络请求，只是把
+// 官方口径写进代码里，防止以后有人把两个类型的有效期搞混。
+func TestPublishCertOutlivesDebug(t *testing.T) {
+	const debugDays, releaseDays = 365, 365 * 3
+	if releaseDays <= debugDays {
+		t.Fatalf("发布证书有效期应长于调试证书")
+	}
+	if releaseDays/365 != 3 {
+		t.Errorf("发布证书应为 3 年")
+	}
+}

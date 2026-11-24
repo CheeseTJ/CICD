@@ -97,6 +97,13 @@ type certInfo struct {
 	// 限定安装范围，0 台意味着除了签名者自己谁也装不了。
 	ProfileDevices int `json:"profile_devices"`
 
+	// CertType 证书类型：debug（调试）/ release（发布）/ 空（未知）。
+	//
+	// 两者有效期差很多：调试证书 1 年，发布证书 3 年。换发布证书后
+	// 用户需要能确认自己确实换对了，而不是又传了一张调试证书。
+	// 数据来源是叶子证书 Subject —— AGC 会在里面写入 Development 或 Release。
+	CertType string `json:"cert_type"`
+
 	// Errors 非致命解析问题（例如 profile 里读不到 bundle-name）
 	Errors []string `json:"errors,omitempty"`
 }
@@ -282,6 +289,7 @@ func collectCertInfo(f hmosCertFile, warnDays int) *certInfo {
 			if leaf != nil {
 				info.Subject = leaf.Subject.String()
 				info.Issuer = leaf.Issuer.String()
+				info.CertType = classifyCertType(leaf.Subject.String())
 			}
 		}
 	}
@@ -333,6 +341,30 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// classifyCertType 从证书 Subject 判断是调试证书还是发布证书。
+//
+// AGC 签发的证书在 Subject 的 OU 后面追加一个标记：
+//
+//	CN=xxx,Development,OU=...   → 调试证书，1 年
+//	CN=xxx,Release,OU=...       → 发布证书，3 年
+//
+// 这个标记不在独立的 RDN 里，而是拼在 CN 后面用反斜杠转义逗号，
+// 所以只能靠子串匹配 —— 想「解析」出 OU 字段反而会因为转义规则
+// 出错。子串匹配在这里足够可靠：两个标记词不会同时出现。
+//
+// 判不出来时返回空串，让前端显示「未知」而不是瞎猜 —— 用户可能上传的是
+// 别处导出的老证书，误标成「发布」会让他白折腾一轮。
+func classifyCertType(subject string) string {
+	switch {
+	case strings.Contains(subject, "Development"):
+		return "debug"
+	case strings.Contains(subject, "Release"):
+		return "release"
+	default:
+		return ""
+	}
 }
 
 // pgyerInstallBlocker 判断这套签名材料能否让测试者从蒲公英安装。

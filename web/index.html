@@ -3182,8 +3182,22 @@
       // 类型徽标：与应用卡片区分开
       const kindTag = el('span', 'kind-tag', '鸿蒙');
       nameRow.appendChild(kindTag);
-      // Profile 类型徽标：一眼看出能不能发给测试者。
-      // debug 类型的 profile 绑定 UDID 白名单，蒲公英会直接拒绝分发。
+      // 证书 + Profile 类型徽标：一眼看出能不能发给测试者，以及是不是
+      // 换成了长期证书。
+      //
+      // 两个徽标分开显示是有意的：证书类型决定有效期长短（调试 1 年 /
+      // 发布 3 年），Profile 类型决定能不能分发（debug / release）。
+      // 两者独立 —— 常见错误是换了发布证书但 Profile 还是 debug。
+      const ctype = a.cert && a.cert.cert_type;
+      if (ctype) {
+        const isDbg = ctype === 'debug';
+        const ct = el('span', 'kind-tag ' + (isDbg ? 'ptype-debug' : 'ptype-release'),
+          isDbg ? '调试证书' : '发布证书');
+        ct.title = isDbg
+          ? '调试证书有效期 1 年，到期需重新申请'
+          : '发布证书有效期 3 年';
+        nameRow.appendChild(ct);
+      }
       const ptype = a.cert && a.cert.profile_type;
       if (ptype) {
         const isDebug = ptype === 'debug';
