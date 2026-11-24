@@ -26,7 +26,7 @@ jobs:
 
       - name: Write .env from secrets
         run: |
-          cat > .env <<EOF
+          cat > .env <<'ENVEOF'
           GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
           PGYER_API_KEY=${{ secrets.PGYER_API_KEY }}
           PORT=8090
@@ -78,7 +78,7 @@ jobs:
           # keystore 密码。签名工具取私钥必需；未配置时重签会明确报错。
           # 从 GitHub Secrets 注入，不写进仓库。
           HMOS_KEYSTORE_PWD=${{ secrets.HMOS_KEYSTORE_PWD }}
-          EOF
+          ENVEOF
           chmod 600 .env
 
       - name: Backup current image
