@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// 这些测试验证调 hapsigntoolv2.jar 时的**参数拼装**。
+// 这些测试验证调 hap-sign-tool.jar 时的**参数拼装**。
 //
 // 为什么用假的 java 而不是真的签名工具：
 //   真实签名要求 AGC 签发的 profile（p7b 是华为专有结构，openssl 造的不认），
@@ -29,8 +29,8 @@ func writeMockJava(t *testing.T) (bin string, logPath string) {
 	bin = filepath.Join(dir, "mockjava")
 
 	// 脚本行为：
-	//   sign   -> 复制 inputFile 到 outputFile（模拟追加签名块）
-	//   verify -> 创建三个输出文件
+	//   sign-app   -> 复制 inFile 到 outFile（模拟追加签名块）
+	//   verify-app -> 创建两个输出文件
 	// 所有调用都把完整参数追加进日志。
 	script := `#!/bin/sh
 LOG="` + logPath + `"
@@ -45,20 +45,20 @@ OUTPROOF=""
 prev=""
 for a in "$@"; do
   case "$a" in
-    sign|verify) CMD="$a" ;;
+    sign|sign-app|verify|verify-app) CMD="$a" ;;
     -inputFile|-inFile) INPUT_NEXT=1 ;;
   esac
   case "$prev" in
     -inputFile|-inFile) INPUT="$a" ;;
     -outputFile|-outFile) OUTPUT="$a" ;;
-    -outcertchain) OUTCERT="$a" ;;
-    -outprofile) OUTPROF="$a" ;;
-    -outproof) OUTPROOF="$a" ;;
+    -outcertchain|-outCertchain|-outCertChain) OUTCERT="$a" ;;
+    -outprofile|-outProfile) OUTPROF="$a" ;;
+    -outproof|-outProof) OUTPROOF="$a" ;;
   esac
   prev="$a"
 done
 
-if [ "$CMD" = "sign" ]; then
+if [ "$CMD" = "sign" ] || [ "$CMD" = "sign-app" ]; then
   if [ -z "$INPUT" ] || [ -z "$OUTPUT" ]; then
     echo "ERROR: Missing parameter" >&2
     exit 1
@@ -67,7 +67,7 @@ if [ "$CMD" = "sign" ]; then
   exit 0
 fi
 
-if [ "$CMD" = "verify" ]; then
+if [ "$CMD" = "verify" ] || [ "$CMD" = "verify-app" ]; then
   # 缺输出参数时按真实工具的行为报错，验证代码有没有传全
   if [ -z "$OUTCERT" ]; then
     echo "ERROR: Missing parameter: outcertchain" >&2
@@ -79,7 +79,6 @@ if [ "$CMD" = "verify" ]; then
   fi
   : > "$OUTCERT"
   : > "$OUTPROF"
-  [ -n "$OUTPROOF" ] && : > "$OUTPROOF"
   exit 0
 fi
 
@@ -98,7 +97,7 @@ exit 1
 // 所以测试必须给一个真实文件，不能只给一个字符串路径。
 func fakeSignTool(t *testing.T) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "hapsigntoolv2.jar")
+	p := filepath.Join(t.TempDir(), "hap-sign-tool.jar")
 	if err := os.WriteFile(p, []byte("fake jar"), 0o600); err != nil {
 		t.Fatalf("创建假 jar 失败: %v", err)
 	}
@@ -143,18 +142,20 @@ func TestResignPassesCorrectSignArgs(t *testing.T) {
 
 	log := readFile(t, logPath)
 
-	// 参数名是试出来的，每一个都容易写错，逐个断言
+	// 参数名来自官方文档（developtools_hapsigner README），逐个断言防止改坏。
+	// 子命令或参数名写错时工具只报 "Unsupported command"/"Missing parameter"，
+	// 不指出正确拼法，所以用测试锁住。
 	mustContain := []string{
-		"sign",           // 子命令不是 sign-app
-		"-mode localjks", // 不是 localSign / localFileSign
+		"sign-app", // 不是 sign
+		"-mode localSign",
 		"-keyAlias debugKey",
 		"-signAlg SHA256withECDSA",
-		"-profile " + cert.ProfileFile, // 不是 -profileFile
+		"-profileFile " + cert.ProfileFile,
 		"-appCertFile " + cert.CertFile,
-		"-privatekey " + cert.Keystore, // 必填，值同 keystore
-		"-inputFile " + hapPath,        // 不是 -inFile
+		"-inFile " + hapPath,
+		"-outFile " + outPath,
 		"-keystoreFile " + cert.Keystore,
-		"-compatibleVersion 26",
+		"-signCode 1",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(log, s) {
@@ -162,9 +163,9 @@ func TestResignPassesCorrectSignArgs(t *testing.T) {
 		}
 	}
 
-	// --add-exports 是 JDK 17+ 必需的，缺了会 IllegalAccessError
-	if !strings.Contains(log, "--add-exports java.base/sun.security.pkcs=ALL-UNNAMED") {
-		t.Errorf("缺少 --add-exports（JDK 17+ 必需）\n实际: %s", log)
+	// 纯 Java 工具不需要 --add-exports（那是依赖 sun.security.* 私有 API 的工具才要的）
+	if strings.Contains(log, "--add-exports") {
+		t.Errorf("hap-sign-tool.jar 不需要 --add-exports\n实际: %s", log)
 	}
 
 	// 产物应存在（mock 会复制输入）
@@ -173,7 +174,7 @@ func TestResignPassesCorrectSignArgs(t *testing.T) {
 	}
 }
 
-// verify 的参数名与 sign 不同：输出必须全小写。
+// verify 的参数名与 sign 不同：用 verify-app + 驼峰输出参数。
 func TestVerifyPassesLowercaseOutputArgs(t *testing.T) {
 	mockJava, logPath := writeMockJava(t)
 	hapPath, _ := makeSigningMaterial(t)
@@ -184,22 +185,27 @@ func TestVerifyPassesLowercaseOutputArgs(t *testing.T) {
 	}
 
 	log := readFile(t, logPath)
-	if !strings.Contains(log, "verify") {
-		t.Errorf("应调用 verify 子命令: %s", log)
+	// 官方 hap-sign-tool.jar 用 verify-app + 驼峰参数（与旧的 v2 正好相反）
+	if !strings.Contains(log, "verify-app") {
+		t.Errorf("应调用 verify-app 子命令: %s", log)
 	}
-	// 关键：小写，写成驼峰会被当成未提供
-	for _, flag := range []string{"-outcertchain", "-outprofile", "-outproof"} {
+	// -outCertChain 的 C 必须大写：写成 -outCertchain 官方工具报 "Param is not trusted"
+	for _, flag := range []string{"-outCertChain", "-outProfile"} {
 		if !strings.Contains(log, flag) {
-			t.Errorf("verify 缺少 %q（必须全小写）\n实际: %s", flag, log)
+			t.Errorf("verify 缺少 %q\n实际: %s", flag, log)
 		}
 	}
-	// 不能出现驼峰版本
-	if strings.Contains(log, "-outCertChain") {
-		t.Errorf("不该用驼峰 -outCertChain，实测工具只认小写\n实际: %s", log)
+	// 写成全小写会被当成未知参数，报 "Param is not trusted"
+	if strings.Contains(log, "-outcertchain") {
+		t.Errorf("不该用全小写 -outcertchain，要求 -outCertChain\n实际: %s", log)
 	}
-	// 输入参数名
-	if !strings.Contains(log, "-inputFile ") {
-		t.Errorf("verify 应使用 -inputFile\n实际: %s", log)
+	// verify-app 没有 -outProof 这个参数
+	if strings.Contains(log, "-outProof") {
+		t.Errorf("verify-app 不支持 -outProof\n实际: %s", log)
+	}
+	// 输入参数名：官方工具用 -inFile
+	if !strings.Contains(log, "-inFile ") {
+		t.Errorf("verify 应使用 -inFile\n实际: %s", log)
 	}
 	// 临时输出文件应被清理
 	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(hapPath), ".verify-*"))
@@ -245,12 +251,12 @@ func TestResignFailsClearlyWithoutSignTool(t *testing.T) {
 	if err == nil {
 		t.Fatal("缺签名工具时应报错")
 	}
-	if !strings.Contains(err.Error(), "HAP_SIGN_TOOL") {
-		t.Errorf("错误应提到 HAP_SIGN_TOOL，got: %v", err)
+	// 必须是真实的环境变量名，写错会让人照着配一个不生效的变量
+	if !strings.Contains(err.Error(), "HMOS_SIGN_TOOL") {
+		t.Errorf("错误应提到 HMOS_SIGN_TOOL，got: %v", err)
 	}
 }
 
-// 源包不存在时给出明确错误。
 func TestResignFailsWhenHapMissing(t *testing.T) {
 	mockJava, _ := writeMockJava(t)
 	_, cert := makeSigningMaterial(t)

@@ -331,10 +331,22 @@ func (p *pgyerClient) uploadHarmonyCert(ctx context.Context, buildKey, p12Path, 
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
 
+	// 参数名与含义（curl 试出来的，官方文档没写）：
+	//
+	//	password     p12 的存储密码
+	//	keyAlias     p12 里的私钥别名
+	//	keyPassword  私钥密码。**必须显式传**，即使与 password 相同 ——
+	//	             漏了会报 3016 "Incorrect key password"，
+	//	             错误信息提示「如果相同就留空」，但留空同样报 3016，
+	//	             属于文档与实现不一致。
+	//
+	// 实测：只传 keyAlias 不传 keyPassword → 3016；两个都传 → code 0。
 	fields := [][2]string{
 		{"_api_key", p.apiKey},
 		{"password", password},
 		{"buildKey", buildKey},
+		// keyPassword 与 p12 存储密码通常相同（DevEco 默认行为）
+		{"keyPassword", password},
 	}
 	if keyAlias != "" {
 		fields = append(fields, [2]string{"keyAlias", keyAlias})

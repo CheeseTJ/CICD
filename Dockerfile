@@ -6,7 +6,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/cicd-console .
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.20
-# JRE 用于鸿蒙 HAP 重签（调 hapsigntoolv2.jar）。
+# JRE 用于鸿蒙 HAP 重签（调 hap-sign-tool.jar）。
 #
 # 为什么不挂载宿主机的 JDK：宿主机是 glibc（Ubuntu），本镜像是 musl（alpine），
 # 直接挂 /usr/lib/jvm 进去 java 会报 "not found"（动态链接器路径不同）。

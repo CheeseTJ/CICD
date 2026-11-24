@@ -17,16 +17,18 @@
 //
 // 工具
 // ----
-// 用华为的 hapsigntoolv2.jar。实测要点（跑通过才敢写进代码）：
-//   - 子命令是 `sign`，不是 `sign-app`
-//   - mode 是 `localjks`（不是 localSign / localFileSign）
-//   - 参数名是 `-profile`（不是 -profileFile）、`-inputFile` / `-outputFile`
-//     （不是 -inFile / -outFile）、`-privatekey`（不能省，值同 keystore 路径）
-//   - JDK 17+ 需要加 `--add-exports java.base/sun.security.pkcs=ALL-UNNAMED`，
-//     否则报 IllegalAccessError（工具内部用了 sun.security.pkcs.PKCS7）
+// 用 OpenHarmony 官方的 hap-sign-tool.jar（developtools_hapsigner 的 dist/）。
+// 纯 Java 实现，JDK 8+ 都能跑，实测 JDK 21 可用。
 //
-// 注意：这个 jar **不支持 sign-profile**，所以不能本地生成 p7b。
-// profile 必须从 AGC 下载（这就是为什么需要用户手动去华为开发者中心）。
+// 参数（官方文档 + 实测）：
+//   - 子命令 `sign-app`，mode `localSign`
+//   - `-keystoreFile` 支持 JKS 和 P12 两种格式
+//   - `-keyPwd` / `-keystorePwd` 必须给（缺了报的是「密码错误」而非「参数缺失」，
+//     容易误判成密码配错）
+//   - 校验用 `verify-app`，其输出参数是 `-outCertChain`（C 大写）和 `-outProfile`
+//
+// 这个 jar 也能 `sign-profile`，但我们的 profile 全部来自 AGC，不需要本地生成。
+
 package main
 
 import (
@@ -44,7 +46,7 @@ import (
 
 // resignConfig 重签名所需参数，全部可由环境变量配置。
 type resignConfig struct {
-	// SignTool 华为 hapsigntoolv2.jar 的路径
+	// SignTool hap-sign-tool.jar 的路径
 	SignTool string
 	// Java java 可执行文件路径（JDK 17+）
 	Java string
@@ -109,7 +111,9 @@ type resignResult struct {
 // （那是 collectCertInfo 的职责，两者职责分开便于测试）。
 func resignHap(ctx context.Context, cfg resignConfig, hapPath, outPath string, cert hmosCertFile) (*resignResult, error) {
 	if cfg.SignTool == "" {
-		return nil, fmt.Errorf("未配置 HAP_SIGN_TOOL（hapsigntoolv2.jar 路径）")
+		// 提示必须用真实的环境变量名（HMOS_SIGN_TOOL）。写成 HAP_SIGN_TOOL
+		// 会让人照着去配一个根本不生效的变量，白白排查一轮。
+		return nil, fmt.Errorf("未配置签名工具：请设置环境变量 HMOS_SIGN_TOOL 指向 hap-sign-tool.jar")
 	}
 	if _, err := os.Stat(cfg.SignTool); err != nil {
 		return nil, fmt.Errorf("找不到签名工具 %s: %w", cfg.SignTool, err)
@@ -143,34 +147,27 @@ func resignHap(ctx context.Context, cfg resignConfig, hapPath, outPath string, c
 		}
 	}
 
-	compatible := mi.MinAPIVersion
-	if compatible <= 0 {
-		compatible = 26 // 鸿蒙 7 的默认值，兜底用
-	}
-
 	java := cfg.Java
 	if java == "" {
 		java = "java"
 	}
 
-	// 实测必需的参数名与 mode，见文件头注释。
+	// 参数名见文件头注释（官方文档 + 实测）。
 	args := []string{
-		// JDK 17+ 模块系统限制：工具内部反射用了 sun.security.pkcs.PKCS7
-		"--add-exports", "java.base/sun.security.pkcs=ALL-UNNAMED",
 		"-jar", cfg.SignTool,
-		"sign",
-		"-mode", "localjks",
+		"sign-app",
+		"-mode", "localSign",
 		"-keyAlias", cert.KeyAlias,
 		"-signAlg", "SHA256withECDSA",
-		"-profile", cert.ProfileFile,
+		"-profileFile", cert.ProfileFile,
 		"-appCertFile", cert.CertFile,
-		"-privatekey", cert.Keystore,
-		"-inputFile", hapPath,
-		"-outputFile", outPath,
+		"-inFile", hapPath,
+		"-outFile", outPath,
 		"-keystoreFile", cert.Keystore,
-		"-compatibleVersion", fmt.Sprintf("%d", compatible),
+		"-signCode", "1",
 	}
-	// 密码通过环境变量之外的参数传入；若配置了就用，没配就用空（部分 keystore 无密码）
+	// 密码：keyPwd 和 keystorePwd 都必须显式给。
+	// 实测缺任一个都报「密码错误」，而不是参数缺失 —— 容易误判成密码配错了。
 	if pwd := os.Getenv("HMOS_KEYSTORE_PWD"); pwd != "" {
 		args = append(args, "-keystorePwd", pwd, "-keyPwd", pwd)
 	}
@@ -221,19 +218,17 @@ func verifyHap(ctx context.Context, cfg resignConfig, hapPath string) error {
 	base := fmt.Sprintf(".verify-%d", time.Now().UnixNano())
 	outCert := filepath.Join(dir, base+".cer")
 	outProfile := filepath.Join(dir, base+".p7b")
-	outProof := filepath.Join(dir, base+".proof")
 	defer os.Remove(outCert)
 	defer os.Remove(outProfile)
-	defer os.Remove(outProof)
 
+	// verify-app 只有三个必填参数，且 -outCertChain 的 C 是大写
+	// （写成 -outCertchain 会被当成未知参数，报 "Param is not trusted"）。
 	args := []string{
-		"--add-exports", "java.base/sun.security.pkcs=ALL-UNNAMED",
 		"-jar", cfg.SignTool,
-		"verify",
-		"-inputFile", hapPath,
-		"-outcertchain", outCert,
-		"-outprofile", outProfile,
-		"-outproof", outProof,
+		"verify-app",
+		"-inFile", hapPath,
+		"-outCertChain", outCert,
+		"-outProfile", outProfile,
 	}
 	cmd := exec.CommandContext(ctx, java, args...)
 	out, err := cmd.CombinedOutput()

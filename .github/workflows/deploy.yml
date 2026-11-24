@@ -72,7 +72,7 @@ jobs:
           # 签名工具在容器内的路径（由 docker-compose.yml 的 volumes 挂进去）。
           # 宿主机上的 jar 放在 /home/ubuntu/server/secrets/cicd/hmos/。
           # 不填也能用：证书倒计时正常，只是「重签」按钮禁用。
-          HMOS_SIGN_TOOL=/app/hmos/hapsigntoolv2.jar
+          HMOS_SIGN_TOOL=/app/hmos/hap-sign-tool.jar
           # 剩余多少天标「即将过期」
           HMOS_WARN_DAYS=30
           # keystore 密码。签名工具取私钥必需；未配置时重签会明确报错。

@@ -37,7 +37,7 @@ type config struct {
 
 	// --- 鸿蒙（HarmonyOS）应用：重签与到期管理 ---
 	HmosFile     string // 鸿蒙应用清单，默认与 DATA_FILE 同目录的 hmos.json
-	HmosSignTool string // hapsigntoolv2.jar 路径（HMOS_SIGN_TOOL）
+	HmosSignTool string // hap-sign-tool.jar 路径（HMOS_SIGN_TOOL）
 	HmosJava     string // java 可执行文件（HMOS_JAVA），空则用 PATH 里的 java
 	HmosWarnDays int    // 剩余天数 ≤ 此值时标为「即将过期」（HMOS_WARN_DAYS，默认 30）
 	// 证书/包的上传根目录（HMOS_UPLOAD_DIR）。默认与 DATA_FILE 同级的 hmos 子目录，

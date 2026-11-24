@@ -71,7 +71,9 @@ Go 单二进制，前端是它内嵌的一个 `index.html`（零构建、零 nod
 
 ```bash
 # 签名工具（重签功能需要，不配则只显示倒计时）
-curl -O https://repo.huaweicloud.com/harmonyos/develop_tools/hapsigntoolv2.jar
+# 用 OpenHarmony 官方的 hap-sign-tool.jar（纯 Java，JDK 8+ 均可）
+curl -L -o hap-sign-tool.jar \
+  https://raw.githubusercontent.com/openharmony/developtools_hapsigner/master/dist/hap-sign-tool.jar
 ```
 
 ### 鉴权
@@ -103,7 +105,7 @@ curl http://localhost:8090/api/health
 | `CLOUDFLARE_API_TOKEN` | Pages 部署记录、Workers 脚本 | `/api/pages` 返回 `configured=false` 并提示 |
 | `CF_ACCOUNT_ID` | 同上 | 同上 |
 | `HEALTH_TARGETS` | 服务健康探测目标 | 监控视图关闭 |
-| `HMOS_SIGN_TOOL` | `hapsigntoolv2.jar` 路径 | 鸿蒙重签不可用，倒计时仍显示 |
+| `HMOS_SIGN_TOOL` | `hap-sign-tool.jar` 路径 | 鸿蒙重签不可用，倒计时仍显示 |
 | `HMOS_KEYSTORE_PWD` | p12/jks 密码 | 重签报错提示缺密码 |
 | `HMOS_WARN_DAYS` | 剩余多少天标「即将过期」（默认 30） | 用默认值 |
 | `USER_CENTER_URL` / `USER_CENTER_APP` | 登录鉴权 | **鉴权关闭，接口对外开放** |
@@ -130,7 +132,7 @@ cloudflare.go      Pages / Workers 采集
 platforms.go       平台徽章判定
 monitor.go         服务健康探测
 hmos_cert.go       鸿蒙证书解析（X.509 与 p7b 有效期）
-hmos_resign.go     HAP 重签名（调 hapsigntoolv2.jar）
+hmos_resign.go     HAP 重签名（调 hap-sign-tool.jar）
 hmos_store.go      鸿蒙应用清单持久化
 hmos_api.go        鸿蒙相关接口 + 到期自动重签
 store.go           data/ 下的 JSON 持久化
