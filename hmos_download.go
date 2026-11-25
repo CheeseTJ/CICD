@@ -118,35 +118,38 @@ func (s *server) handleHmosManifest(w http.ResponseWriter, r *http.Request) {
 		Signed bool `json:"signed"`
 		// ProfileType debug / release
 		ProfileType string `json:"profile_type"`
-		// DeviceCount profile 里登记的 UDID 数量。0 且 release = 不限设备。
+		// Distribution app-distribution-type（app_gallery / internaltesting / ...）
+		Distribution string `json:"distribution"`
+		// DeviceCount profile 里登记的 UDID 数量
 		DeviceCount int `json:"device_count"`
-		// InstallHint 一句话说明「谁能装」
+		// CanInstall 能否下载后直接侧载安装
+		CanInstall bool `json:"can_install"`
+		// InstallHint 一句话说明「能不能装、为什么」
 		InstallHint string `json:"install_hint"`
+		// ActionHint 装不上时的下一步建议
+		ActionHint string `json:"action_hint,omitempty"`
 	}
 
 	info := installInfo{
-		BundleName:  app.BundleName,
-		HapExists:   v.HapExists,
-		ProfileType: v.Cert.ProfileType,
-		DeviceCount: v.Cert.ProfileDevices,
+		BundleName:   app.BundleName,
+		HapExists:    v.HapExists,
+		ProfileType:  v.Cert.ProfileType,
+		Distribution: v.Distribution,
+		DeviceCount:  v.Cert.ProfileDevices,
+		CanInstall:   v.Sideload.Allowed,
+		InstallHint:  v.Sideload.Reason,
+		ActionHint:   v.Sideload.Hint,
 	}
 	if fi, err := os.Stat(v.HapFile); err == nil {
 		info.HapSize = fi.Size()
 	}
 	info.Signed = v.HapExists && v.Cert.ProfileNotAfter > 0
 
-	switch {
-	case !v.HapExists:
+	// 没传包/没传 profile 时，覆盖成更直白的提示
+	if !v.HapExists {
+		info.CanInstall = false
 		info.InstallHint = "尚未上传 HAP"
-	case info.ProfileType == "":
-		info.InstallHint = "尚未上传 Profile，无法判断安装范围"
-	case info.ProfileType == "release" && info.DeviceCount == 0:
-		info.InstallHint = "不限制设备，任何纯血鸿蒙设备都能装"
-	case info.DeviceCount > 0:
-		info.InstallHint = fmt.Sprintf(
-			"仅限 Profile 里登记的 %d 台设备（UDID 白名单）", info.DeviceCount)
-	default:
-		info.InstallHint = "Profile 类型为 " + info.ProfileType + "，安装范围未知"
+		info.ActionHint = ""
 	}
 
 	writeJSON(w, http.StatusOK, info)

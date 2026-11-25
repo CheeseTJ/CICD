@@ -3199,14 +3199,23 @@
           : '发布证书有效期 3 年';
         nameRow.appendChild(ct);
       }
-      const ptype = a.cert && a.cert.profile_type;
-      if (ptype) {
-        const isDebug = ptype === 'debug';
-        const pt = el('span', 'kind-tag ' + (isDebug ? 'ptype-debug' : 'ptype-release'),
-          isDebug ? 'debug' : ptype);
-        pt.title = isDebug
-          ? 'debug 类型 profile 只能装到登记的 ' + ((a.cert && a.cert.profile_devices) || 0) + ' 台设备，蒲公英无法分发给其他人'
-          : 'release 类型 profile，可正常分发给测试者';
+      // Profile 徽标：把「签发类型」和「分发类型」合成一个。
+      //
+      // 原来分开显示会出现三个徽标（鸿蒙 / 发布证书 / release / 应用市场），
+      // 标题行放不下，后面的会被 ... 折叠掉 —— 而最关键的「应用市场」
+      // 恰好是被折叠的那个。合成一个后信息密度更高也不会被截断。
+      const dtxt = {
+        app_gallery: '应用市场',
+        internaltesting: '指定设备',
+        enterprise: '企业分发',
+      }[a.distribution] || (a.cert && a.cert.profile_type) || '';
+      if (dtxt) {
+        const canSideload = !!(a.sideload && a.sideload.allowed);
+        // 能侧载用绿，不能（应用市场专用）用琥珀警示
+        const cls = canSideload ? 'ptype-release' : 'ptype-debug';
+        const pt = el('span', 'kind-tag ' + cls, dtxt);
+        pt.title = (a.sideload && a.sideload.reason) ||
+          ('Profile ' + (a.cert && a.cert.profile_type) + ' / ' + a.distribution);
         nameRow.appendChild(pt);
       }
       title.appendChild(nameRow);
@@ -3297,6 +3306,25 @@
         w.title = '证书与 keystore 不配对，重签会失败';
         card.appendChild(w);
       }
+      // 侧载不可行：profile 分发类型不允许本地安装（app_gallery 只能走应用市场）。
+      // 这一条比蒲公英那条更容易被误解 —— 用户会以为「下载按钮能点就能装」，
+      // 所以必须在点之前就说清，而不是等他装失败。
+      if (a.sideload && !a.sideload.allowed) {
+        const w = el('div', 'hmos-blocker');
+        w.innerHTML = svg('alert', 14);
+        const txt = el('span', '', a.sideload.reason);
+        if (a.sideload.hint) {
+          const hint = el('span', 'blocker-hint', '　→ ' + a.sideload.hint);
+          hint.style.display = 'block';
+          hint.style.marginTop = '4px';
+          hint.style.opacity = '0.85';
+          txt.appendChild(hint);
+        }
+        w.appendChild(txt);
+        w.onclick = () => window.open(a.huawei_console_url, '_blank', 'noopener');
+        w.title = '点击去华为开发者中心更换 Profile';
+        card.appendChild(w);
+      }
       if (a.pgyer_install_blocker) {
         const w = el('div', 'hmos-blocker');
         w.innerHTML = svg('alert', 14);
@@ -3357,13 +3385,24 @@
       // 直接下载 HAP：绕开蒲公英的「必须是指定设备发布 Profile」限制。
       // 用普通 <a download> 让浏览器接管下载，不经过 fetch —— 37MB 的包
       // 走 fetch 要自己拼 Blob，反而容易在移动端出问题。
+      //
+      // 但「能下载」≠「能安装」：profile 是 app_gallery 时系统会拒绝侧载。
+      // 这种情况下仍然允许下载（用户可能只想备份包），但要先说清楚。
       const dlBtn = el('button', 'btn icon-only');
       dlBtn.innerHTML = svg('download', 16);
-      dlBtn.title = a.hap_exists
-        ? '直接下载 HAP（不经蒲公英，装到自己手机）'
-        : '尚未上传 HAP';
+      const canInstall = !!(a.sideload && a.sideload.allowed);
+      dlBtn.title = !a.hap_exists
+        ? '尚未上传 HAP'
+        : canInstall
+          ? '直接下载 HAP（不经蒲公英，装到自己手机）'
+          : '下载 HAP（当前 Profile 不允许本机安装，见上方警告）';
       dlBtn.disabled = busy || !a.hap_exists;
       dlBtn.onclick = () => {
+        if (!canInstall && a.sideload && a.sideload.reason) {
+          // 不阻断下载，但先把「装不上」这件事说明白，
+          // 避免用户下载完折腾半天才发现。
+          hmosToast(a.sideload.reason, 'info');
+        }
         const url = '/hmos/download?id=' + encodeURIComponent(a.id);
         const link = document.createElement('a');
         link.href = url;

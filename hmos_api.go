@@ -45,6 +45,14 @@ type hmosView struct {
 	// 不配对意味着重签一定会失败，而且 AGC 和本控制台都不会提前报错 ——
 	// 只能在这里主动比对公钥发现。
 	KeyMatch keyMatchResult `json:"key_match"`
+	// Distribution Profile 的分发类型（app_gallery / internaltesting / ...），
+	// 对应 p7b 里的 app-distribution-type。前端用它显示徽标。
+	Distribution string `json:"distribution"`
+	// Sideload 能否下载 hap 直接装。
+	//
+	// 这是最容易判错的一件事：app_gallery 类型看着「不限设备」，实际是
+	// 应用市场专用，侧载会被系统拒绝。必须显式算出来告诉用户。
+	Sideload sideloadVerdict `json:"sideload"`
 }
 
 // huaweiAGCUrl AppGallery Connect 的证书管理页。
@@ -136,6 +144,11 @@ func buildHmosViewWithKey(a *HmosApp, warnDays int, uploadRoot, password, javaHo
 
 	// 证书与 keystore 的配对校验：不匹配则重签必然失败，必须提前报
 	v.KeyMatch = verifyKeyPair(certPath, keyPath, password, a.KeyAlias, javaHome)
+
+	// 分发类型与侧载可行性。
+	// 只看 profile 的三个字段：app-distribution-type / type / 设备数。
+	v.Distribution = profileDistribution(profPath)
+	v.Sideload = judgeSideload(v.Distribution, v.Cert.ProfileType, v.Cert.ProfileDevices)
 	return v
 }
 
