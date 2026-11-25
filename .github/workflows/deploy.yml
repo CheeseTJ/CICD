@@ -68,6 +68,9 @@ jobs:
           HEALTH_TARGETS=cicd=/api/health,jmreader=https://jm.june-t.top/api/schedule,wordrush=https://eng.june-t.top/api/health,ucenter-worker=https://ucenter.june-t.top/,music-worker=https://valut.june-t.top/,music-api=https://music.june-t.top/health,remind=https://remind.june-t.top/healthz,imgbed=https://imgbed.june-t.top/api/health
           # 本控制台对外地址：用于预判各健康接口是否允许本页跨域读取
           PUBLIC_ORIGIN=https://cicd.taojun.top
+          # 邮件网关地址与收件人（非敏感，写在这里；令牌走 secret）
+          MAIL_API_URL=https://mail.june-t.top/internal/mail/send
+          MAIL_TO=2697065512@qq.com
           # ---- 鸿蒙应用证书管理 ----
           # 签名工具在容器内的路径（由 docker-compose.yml 的 volumes 挂进去）。
           # 宿主机上的 jar 放在 /home/ubuntu/server/secrets/cicd/hmos/。
@@ -80,6 +83,13 @@ jobs:
           # 单引号包裹：docker-compose 读 env_file 时会做变量插值，
           # 密码里的 $ 会被当变量引用展开成空。单引号能阻止插值。
           HMOS_KEYSTORE_PWD='${{ secrets.HMOS_KEYSTORE_PWD }}'
+          # ---- 邮件通知（可选，缺任一项则静默跳过）----
+          # 走内部邮件网关，不直连 SMTP。所有服务共用一套 SMTP 凭据，
+          # 换邮箱服务商只需改网关。
+          MAIL_API_URL=${MAIL_API_URL}
+          MAIL_API_TOKEN='${{ secrets.MAIL_API_TOKEN }}'
+          MAIL_TO=${MAIL_TO}
+          MAIL_FROM_NAME='CICD 控制台'
           ENVEOF
           chmod 600 .env
 
