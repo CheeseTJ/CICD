@@ -280,8 +280,14 @@ func collectCertInfo(f hmosCertFile, warnDays int) *certInfo {
 		info.Errors = append(info.Errors, "未配置证书文件")
 	}
 
-	if f.CertFile != "" {
-		notAfter, leaf, err := parseCERNotAfter(f.CertFile)
+	// 扩展名由上传内容决定（.cer/.pem、.p7b/.p7c），而调用方按规范名
+	// 传路径。这里统一解析到磁盘上真实存在的文件，否则换过扩展名后
+	// 会静默变成「未配置证书」。
+	certPath := actualPathIfSet(f.CertFile)
+	profPath := actualPathIfSet(f.ProfileFile)
+
+	if certPath != "" {
+		notAfter, leaf, err := parseCERNotAfter(certPath)
 		if err != nil {
 			info.Errors = append(info.Errors, "读取证书失败: "+err.Error())
 		} else {
@@ -294,10 +300,10 @@ func collectCertInfo(f hmosCertFile, warnDays int) *certInfo {
 		}
 	}
 
-	if f.ProfileFile == "" {
+	if profPath == "" {
 		info.Errors = append(info.Errors, "未配置 profile 文件")
 	} else {
-		pv, err := parseProfileP7B(f.ProfileFile)
+		pv, err := parseProfileP7B(profPath)
 		if err != nil {
 			info.Errors = append(info.Errors, "读取 profile 失败: "+err.Error())
 		} else {
@@ -334,6 +340,15 @@ func collectCertInfo(f hmosCertFile, warnDays int) *certInfo {
 	}
 
 	return info
+}
+
+// actualPathIfSet 空路径原样返回（保持「未配置」语义），
+// 非空则解析到磁盘上真实存在的同主体名文件。
+func actualPathIfSet(p string) string {
+	if p == "" {
+		return ""
+	}
+	return actualPath(p)
 }
 
 func minInt64(a, b int64) int64 {

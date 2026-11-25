@@ -182,6 +182,13 @@ func (s *server) handleHmosUploadFile(w http.ResponseWriter, r *http.Request) {
 		info = collectCertInfo(hmosCertFile{ProfileFile: dst}, s.cfg.HmosWarnDays)
 	}
 
+	// 上传完成后异步触发重签：换 Profile/证书的完整流程里，「重签」这一步
+	// 没有任何决策 —— 材料齐了就必须做。忘了反而会让分发页上的包还是旧签名。
+	//
+	// 放在 writeJSON 之前调：autoResignAfterUpload 只排队不阻塞
+	// （真正的重签在 goroutine 里），所以不会拖慢响应。
+	s.autoResignAfterUpload(bundle, kind)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":     true,
 		"path":   dst,
@@ -189,6 +196,9 @@ func (s *server) handleHmosUploadFile(w http.ResponseWriter, r *http.Request) {
 		"size":   written,
 		"cert":   info,
 		"bundle": bundle,
+		// auto_resign 告诉前端「已排入自动重签队列」，它据此开始轮询状态。
+		// 材料不齐时这里是 false（还缺文件，重签会失败，不触发）。
+		"auto_resign": s.resignQ != nil && s.resignQ.status(bundle).State == resignStateRunning,
 	})
 }
 

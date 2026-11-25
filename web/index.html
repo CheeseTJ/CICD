@@ -3151,12 +3151,57 @@
         }
         hmosBanner(msg);
         await loadHmos(true);
+
+        // 服务端在材料齐备时会自动排入重签任务。这里开始轮询状态，
+        // 让用户不用自己再点一次「重签」——换 profile 的流程里那一步
+        // 没有任何决策，忘了反而会让分发页上的包还是旧签名。
+        if (r.auto_resign) {
+          hmosToast('材料已齐，正在自动重签…', 'info');
+          await hmosWaitAutoResign(a.id);
+        }
       } catch (e) {
         hmosBanner('上传失败：' + e.message, true);
       } finally {
         hmosBusy[a.id] = '';
         render();
       }
+    }
+
+    // 轮询自动重签状态直到结束。
+    //
+    // 用轮询而不是 SSE/WebSocket：重签只跑 10-30 秒，1.5 秒一次完全够用，
+    // 而 SSE 在 Cloudflare 隧道下容易被缓冲掉（用户点了重签却一直转圈）。
+    async function hmosWaitAutoResign(id) {
+      const started = Date.now();
+      const TIMEOUT_MS = 180000; // 3 分钟，比 resignTimeout 宽一点
+      let lastState = '';
+
+      while (Date.now() - started < TIMEOUT_MS) {
+        await new Promise(res => setTimeout(res, 1500));
+        let r;
+        try {
+          r = await api('/api/hmos/resign-status?id=' + encodeURIComponent(id));
+        } catch (e) {
+          // 轮询失败不中断——网络抖一下就放弃会让用户以为没在重签
+          continue;
+        }
+        const task = r.task || {};
+        lastState = task.state || '';
+
+        if (lastState === 'done') {
+          hmosToast('自动重签完成', 'ok');
+          await loadHmos(true);
+          return;
+        }
+        if (lastState === 'failed') {
+          // 失败信息由 last_error 呈现（卡片上有红字），这里只做提示
+          hmosToast('自动重签失败：' + (task.message || '未知原因'), 'error');
+          await loadHmos(true);
+          return;
+        }
+        // running：卡片上的忙碌态由 render 依据 hmosBusy 显示，继续等
+      }
+      hmosToast('重签耗时异常，请手动点重签按钮', 'error');
     }
 
     // 鸿蒙应用卡片。
@@ -3253,6 +3298,13 @@
             icon: 'smartphone', label: '打开蒲公英下载页',
             disabled: !a.pgyer_shortcut_url,
             onClick: () => window.open(a.pgyer_shortcut_url, '_blank', 'noopener')
+          },
+          {
+            // 低频操作放菜单：换证书时才用，占着底部一个按钮会把
+            // 下载/重签/同步挤到溢出（四个图标按钮 + 同步文字放不下）。
+            icon: 'external', label: '打开华为开发者中心',
+            onClick: () => window.open(a.huawei_console_url || hmosMeta.console_url,
+              '_blank', 'noopener')
           },
           {
             // keystore 里的密钥别名。换 p12 时别名常常跟着变，
@@ -3413,13 +3465,11 @@
       };
       right.appendChild(dlBtn);
 
-      const consoleUrl = a.huawei_console_url || hmosMeta.console_url;
-      const certBtn = el('button', 'btn icon-only');
-      certBtn.innerHTML = svg('external', 16);
-      certBtn.title = '获取证书：打开华为开发者中心';
-      certBtn.onclick = () => window.open(consoleUrl, '_blank', 'noopener');
-      right.appendChild(certBtn);
-
+      // 重签按钮。
+      //
+      // 「打开华为开发者中心」原本也在这里，但四个图标按钮 + 同步文字在
+      // 常见宽度下会溢出（卡片底部被挤出边框）。那个操作只在换证书时用，
+      // 已移到顶部的 ⋮ 菜单。
       const resignBtn = el('button', 'btn icon-only');
       resignBtn.innerHTML = svg('refresh', 16);
       resignBtn.title = busy === 'resign' ? '重签中…' : '重签：用当前证书重新签名 HAP';

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 分发类型与侧载判定。
@@ -149,4 +151,89 @@ func TestHmosViewJSONHasSideloadFields(t *testing.T) {
 			t.Errorf("下发 JSON 缺少 %s", k)
 		}
 	}
+}
+
+// 扩展名不一致时也必须能读到 profile。
+//
+// 踩过的 bug：上传 .p7c 后文件存成 profile.p7c，而视图层按规范名
+// profile.p7b 推导路径 → os.ReadFile 失败 → 分发类型读成空
+// → 界面误报「Profile 缺少分发类型字段，无法判断能否侧载」。
+// 用户看到这句话完全不知道是扩展名的问题。
+func TestProfileDistributionHandlesAltExtension(t *testing.T) {
+	dir := t.TempDir()
+	// 实际文件叫 profile.p7c
+	p7c := filepath.Join(dir, "profile.p7c")
+	body := []byte(`{"app-distribution-type":"internaltesting","type":"release"}`)
+	if err := os.WriteFile(p7c, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 调用方传的是规范名 profile.p7b
+	canonical := filepath.Join(dir, "profile.p7b")
+	got := profileDistribution(actualPath(canonical))
+	if got != DistributionInternalTesting {
+		t.Errorf("应通过 actualPath 找到 .p7c，得到 %q", got)
+	}
+}
+
+// actualPath 找不到同主体名的文件时原样返回，让调用方正常报「文件不存在」。
+func TestActualPathFallsBackToCanonical(t *testing.T) {
+	dir := t.TempDir()
+	canonical := filepath.Join(dir, "profile.p7b")
+	if got := actualPath(canonical); got != canonical {
+		t.Errorf("无匹配文件时应原样返回，得到 %q", got)
+	}
+}
+
+// 规范名存在时直接用，不去扫目录。
+func TestActualPathPrefersCanonical(t *testing.T) {
+	dir := t.TempDir()
+	canonical := filepath.Join(dir, "profile.p7b")
+	os.WriteFile(canonical, []byte("x"), 0o600)
+	// 同时存在另一个同主体名的文件
+	os.WriteFile(filepath.Join(dir, "profile.p7c"), []byte("y"), 0o600)
+
+	if got := actualPath(canonical); got != canonical {
+		t.Errorf("应优先用规范名，得到 %q", got)
+	}
+}
+
+// .part 临时文件不能被当成正式文件。
+func TestActualPathSkipsPartFiles(t *testing.T) {
+	dir := t.TempDir()
+	canonical := filepath.Join(dir, "profile.p7b")
+	// 只有 .part（上传中断的残留）
+	os.WriteFile(filepath.Join(dir, "profile.p7b.part"), []byte("x"), 0o600)
+
+	if got := actualPath(canonical); got != canonical {
+		t.Errorf(".part 不该被选中，得到 %q", got)
+	}
+}
+
+// collectCertInfo 也要能处理备用扩展名。
+func TestCollectCertInfoHandlesAltExtensions(t *testing.T) {
+	dir := t.TempDir()
+	// profile 用 .p7c
+	p7c := filepath.Join(dir, "profile.p7c")
+	now := time.Now().Unix()
+	raw := []byte(`{"type":"release","validity":{"not-before":` +
+		itoa(now-86400) + `,"not-after":` + itoa(now+86400*100) +
+		`},"bundle-info":{"bundle-name":"com.x"}}`)
+	os.WriteFile(p7c, raw, 0o600)
+
+	// 传规范名
+	info := collectCertInfo(hmosCertFile{
+		ProfileFile: filepath.Join(dir, "profile.p7b"),
+	}, 30)
+
+	if info.ProfileNotAfter == 0 {
+		t.Error("应通过 actualPath 读到 .p7c 的有效期")
+	}
+	if info.ProfileType != "release" {
+		t.Errorf("ProfileType = %q", info.ProfileType)
+	}
+}
+
+func itoa(n int64) string {
+	return strconv.FormatInt(n, 10)
 }

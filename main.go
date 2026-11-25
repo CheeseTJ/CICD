@@ -146,6 +146,9 @@ type server struct {
 	// 邮件网关客户端（见 mail.go）。未配置时 enabled() 为 false，
 	// 所有发送调用静默跳过 —— 不需要通知的部署不会因此报错。
 	mail *mailClient
+	// 自动重签队列（见 hmos_autoresign.go）。上传材料后异步重签，
+	// 同应用串行、不同应用并行。
+	resignQ *resignQueue
 	// 到期提醒的每日去重状态
 	expiryMail expiryMailState
 }
@@ -215,6 +218,7 @@ func main() {
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 		hmos:    hmosStore,
+		resignQ: newResignQueue(),
 		mail: newMailClient(mailConfig{
 			URL:      cfg.MailAPIURL,
 			Token:    cfg.MailAPIToken,
@@ -247,6 +251,8 @@ func main() {
 	// 不希望被前端 fetch 拦截；但依然走鉴权，包里有证书信息。
 	mux.HandleFunc("/hmos/download", s.auth.wrap(s.handleHmosDownload))
 	mux.HandleFunc("/api/hmos/manifest", s.auth.wrap(s.handleHmosManifest))
+	// 自动重签任务状态（上传材料后异步触发，前端轮询这个）
+	mux.HandleFunc("/api/hmos/resign-status", s.auth.wrap(s.handleHmosResignStatus))
 	// 邮件通知：状态查询 / 发测试邮件 / 预览提醒邮件
 	mux.HandleFunc("/api/mail/status", s.auth.wrap(s.handleMailStatus))
 	mux.HandleFunc("/api/mail/test", s.auth.wrap(s.handleMailTest))

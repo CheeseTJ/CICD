@@ -143,13 +143,47 @@ func buildHmosViewWithKey(a *HmosApp, warnDays int, uploadRoot, password, javaHo
 	v.PgyerInstallBlocker = v.Cert.pgyerInstallBlocker()
 
 	// 证书与 keystore 的配对校验：不匹配则重签必然失败，必须提前报
-	v.KeyMatch = verifyKeyPair(certPath, keyPath, password, a.KeyAlias, javaHome)
+	v.KeyMatch = verifyKeyPair(actualPath(certPath), actualPath(keyPath), password, a.KeyAlias, javaHome)
 
 	// 分发类型与侧载可行性。
 	// 只看 profile 的三个字段：app-distribution-type / type / 设备数。
-	v.Distribution = profileDistribution(profPath)
+	//
+	// 注意用 actualPath 而不是 profPath：上传时扩展名由文件内容决定
+	// （profile 可能是 .p7b 也可能是 .p7c），固定路径会读不到文件，
+	// 导致分发类型被判成空 → 界面误报「缺少分发类型字段」。
+	v.Distribution = profileDistribution(actualPath(profPath))
 	v.Sideload = judgeSideload(v.Distribution, v.Cert.ProfileType, v.Cert.ProfileDevices)
 	return v
+}
+
+// actualPath 把「按约定推导的路径」修正为磁盘上真实存在的文件路径。
+//
+// 为什么需要：上传时保留原始扩展名（.cer/.pem、.p7b/.p7c、.p12/.jks），
+// 而视图层一律按规范名（cert.cer / profile.p7b / key.p12）推导路径。
+// 两者不一致时，os.ReadFile 会失败，各种解析都变成「读不到」——
+// 表现为「未上传」「缺少字段」这类误导性提示。
+//
+// 找不到同主体名的文件时原样返回，让调用方照常报「文件不存在」。
+func actualPath(canonical string) string {
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	base := strings.TrimSuffix(filepath.Base(canonical), filepath.Ext(canonical))
+	dir := filepath.Dir(canonical)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return canonical
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasPrefix(n, base+".") && !strings.HasSuffix(n, ".part") {
+			return filepath.Join(dir, n)
+		}
+	}
+	return canonical
 }
 
 // fileStat 读取单个文件的存在性与大小。
