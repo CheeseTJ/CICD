@@ -554,12 +554,18 @@ func (s *server) autoResignOnce() {
 //
 // 复用 AUTO_SYNC_INTERVAL 的间隔太长（默认 5 分钟够用），但到期判断是「按天」的，
 // 所以单独用更长周期（10 分钟）避免无谓的文件读取。
+//
+// 这里同时驱动两件事：
+//   - autoResignOnce  用现有材料重签 HAP（只能续期，不能换 Profile）
+//   - checkAndNotifyExpiry  发到期提醒邮件（Profile 到期只能人去 AGC 处理，
+//     所以提醒比自动重签更关键）
 func (s *server) startHmosAutoResign() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			s.autoResignOnce()
+			s.checkAndNotifyExpiry()
 		}
 	}()
 }

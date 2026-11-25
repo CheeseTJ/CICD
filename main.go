@@ -43,6 +43,16 @@ type config struct {
 	// 证书/包的上传根目录（HMOS_UPLOAD_DIR）。默认与 DATA_FILE 同级的 hmos 子目录，
 	// 这样文件落在持久化卷里，容器重建后不丢。
 	HmosUploadDir string
+
+	// --- 邮件通知（可选）---
+	// 走内部邮件网关，不直连 SMTP。三项全配齐才生效，缺任一项则静默跳过。
+	// 这样不需要提醒的部署不会因为「没配邮件」而报错。
+	MailAPIURL   string   // MAIL_API_URL  网关地址
+	MailAPIToken string   // MAIL_API_TOKEN Bearer 令牌，可空
+	MailTo       []string // MAIL_TO 收件人，逗号分隔
+	// MailFromName 发件人显示名（MAIL_FROM_NAME），默认「CICD 控制台」。
+	// 邮件网关被多个系统共用，不指定的话收件人分不清是哪个系统发的。
+	MailFromName string
 }
 
 func loadConfig() *config {
@@ -70,6 +80,11 @@ func loadConfig() *config {
 		HmosJava:      os.Getenv("HMOS_JAVA"),
 		HmosWarnDays:  getenvInt("HMOS_WARN_DAYS", 30),
 		HmosUploadDir: getenv("HMOS_UPLOAD_DIR", filepath.Join(filepath.Dir(dataFile), "hmos")),
+
+		MailAPIURL:   os.Getenv("MAIL_API_URL"),
+		MailAPIToken: os.Getenv("MAIL_API_TOKEN"),
+		MailTo:       splitCSV(os.Getenv("MAIL_TO")),
+		MailFromName: getenv("MAIL_FROM_NAME", "CICD 控制台"),
 	}
 }
 
@@ -127,6 +142,12 @@ type server struct {
 
 	// 鸿蒙应用清单（独立存储，见 hmos_store.go）
 	hmos *HmosStore
+
+	// 邮件网关客户端（见 mail.go）。未配置时 enabled() 为 false，
+	// 所有发送调用静默跳过 —— 不需要通知的部署不会因此报错。
+	mail *mailClient
+	// 到期提醒的每日去重状态
+	expiryMail expiryMailState
 }
 
 type assetView struct {
@@ -194,6 +215,12 @@ func main() {
 		syncing: map[string]bool{},
 		jobs:    map[string]*syncJob{},
 		hmos:    hmosStore,
+		mail: newMailClient(mailConfig{
+			URL:      cfg.MailAPIURL,
+			Token:    cfg.MailAPIToken,
+			To:       cfg.MailTo,
+			FromName: cfg.MailFromName,
+		}),
 	}
 
 	mux := http.NewServeMux()
@@ -220,6 +247,10 @@ func main() {
 	// 不希望被前端 fetch 拦截；但依然走鉴权，包里有证书信息。
 	mux.HandleFunc("/hmos/download", s.auth.wrap(s.handleHmosDownload))
 	mux.HandleFunc("/api/hmos/manifest", s.auth.wrap(s.handleHmosManifest))
+	// 邮件通知：状态查询 / 发测试邮件 / 预览提醒邮件
+	mux.HandleFunc("/api/mail/status", s.auth.wrap(s.handleMailStatus))
+	mux.HandleFunc("/api/mail/test", s.auth.wrap(s.handleMailTest))
+	mux.HandleFunc("/api/mail/preview", s.auth.wrap(s.handleMailPreview))
 
 	if err := os.MkdirAll(cfg.HmosUploadDir, 0o755); err != nil {
 		log.Printf("警告：创建鸿蒙上传目录 %s 失败: %v", cfg.HmosUploadDir, err)
