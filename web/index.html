@@ -3906,6 +3906,9 @@
     });
 
     /* ---------- 启动 ---------- */
+    //
+    // 首屏要拉的完整数据集。boot() 里「已有令牌」的分支也必须拉同一批，
+    // 否则刷新页面与重新登录会看到不同的内容（曾经因此漏掉鸿蒙卡片）。
     function startApp() {
       loadRepos();
       loadHmos();      // 鸿蒙应用混在应用列表里，必须一起拉
@@ -3926,8 +3929,14 @@
       if (!authConfig.required) { hideVeil(); startApp(); return; }
       if (!authGet('access')) { showLogin(''); return; }
       // 已有令牌：先在幕后完成首屏加载（会话失效会在 api() 里 401→弹登录并揭幕）
+      //
+      // 必须和 startApp() 拉同一批数据。之前这里漏了 loadHmos，导致
+      // 「刷新页面（已有令牌）」的场景永远看不到鸿蒙应用卡片，而
+      // 「重新登录」却能看到 —— 两个入口拉的数据集不一致，非常难排查。
       await Promise.race([
-        Promise.allSettled([loadRepos(), loadDeployments(), loadPages()]),
+        Promise.allSettled([
+          loadRepos(), loadHmos(), loadDeployments(), loadPages(),
+        ]),
         sleep(3500)  // 兜底：数据再慢也不能把用户晾在幕布后
       ]);
       if (!authGet('access')) return;  // 会话失效：登录框已弹出并揭幕
